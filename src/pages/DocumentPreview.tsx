@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Search, FileText } from "lucide-react";
+import { Search, FileText, ChevronRight } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 interface Block {
@@ -16,13 +16,25 @@ interface Section {
   title: string;
   content: Block[];
   children?: Section[];
+  parentId?: string;
+}
+
+interface Attachment {
+  id: string;
+  name: string;
+  type: "image" | "pdf" | "link";
+  data: string;
 }
 
 const DocumentPreview = () => {
   const { id } = useParams();
   const [title, setTitle] = useState("Untitled Document");
-  const [sections, setSections] = useState<Section[]>([]);
+  const [sections, setSections] = useState<Section[]>([
+    { id: "1", title: "Introduction", content: [] },
+  ]);
   const [activeSection, setActiveSection] = useState("1");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     const saved = localStorage.getItem(`doc-${id}`);
@@ -30,85 +42,270 @@ const DocumentPreview = () => {
       const data = JSON.parse(saved);
       setTitle(data.title || "Untitled Document");
       setSections(data.sections || []);
+      setAttachments(data.attachments || []);
       if (data.sections && data.sections.length > 0) {
         setActiveSection(data.sections[0].id);
       }
     }
   }, [id]);
 
+  const renderBlockContent = (content: string) => {
+    const parts = content.split(/(\[(?:IMAGE|PDF):[^\]]+\])/g);
+
+    return parts.map((part, index) => {
+      const imageMatch = part.match(/\[IMAGE:([^:]+):([^\]]+)\]/);
+      const pdfMatch = part.match(/\[PDF:([^:]+):([^\]]+)\]/);
+
+      if (imageMatch) {
+        const [, attachmentId, fileName] = imageMatch;
+        const attachment = attachments.find((a) => a.id === attachmentId);
+        if (attachment) {
+          return (
+            <div key={index} className="my-4">
+              <img
+                src={attachment.data}
+                alt={fileName}
+                className="max-w-full rounded-lg border shadow-card"
+              />
+              <p className="mt-2 text-sm text-muted-foreground">{fileName}</p>
+            </div>
+          );
+        }
+      }
+
+      if (pdfMatch) {
+        const [, attachmentId, fileName] = pdfMatch;
+        const attachment = attachments.find((a) => a.id === attachmentId);
+        if (attachment) {
+          return (
+            <div key={index} className="my-4 rounded-lg border bg-muted p-4">
+              <div className="flex items-center gap-3">
+                <FileText className="h-6 w-6 text-primary" />
+                <div className="flex-1">
+                  <p className="font-medium">{fileName}</p>
+                  <p className="text-sm text-muted-foreground">PDF Document</p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    const link = document.createElement("a");
+                    link.href = attachment.data;
+                    link.download = fileName;
+                    link.click();
+                  }}
+                >
+                  Download
+                </Button>
+              </div>
+            </div>
+          );
+        }
+      }
+
+      return <span key={index}>{part}</span>;
+    });
+  };
+
   const renderContent = (blocks: Block[]) => {
     return blocks.map((block) => {
       if (block.type === "h1") {
         return (
           <h1 key={block.id} className="text-3xl font-bold mb-4">
-            {block.content}
+            {renderBlockContent(block.content)}
           </h1>
         );
       }
+      if (block.type === "h2") {
+        return (
+          <h2 key={block.id} className="text-2xl font-bold mb-3">
+            {renderBlockContent(block.content)}
+          </h2>
+        );
+      }
+      if (block.type === "h3") {
+        return (
+          <h3 key={block.id} className="text-xl font-bold mb-2">
+            {renderBlockContent(block.content)}
+          </h3>
+        );
+      }
       return (
-        <p key={block.id} className="text-base leading-7 mb-4">
-          {block.content}
+        <p key={block.id} className="text-base leading-7 mb-4 whitespace-pre-wrap">
+          {renderBlockContent(block.content)}
         </p>
       );
     });
   };
 
-  const currentSection = sections.find((s) => s.id === activeSection);
+  const flattenSections = (sectionList: Section[]): Section[] => {
+    const result: Section[] = [];
+    sectionList.forEach((section) => {
+      result.push(section);
+      if (section.children) {
+        result.push(...flattenSections(section.children));
+      }
+    });
+    return result;
+  };
+
+  const allSections = flattenSections(sections);
+  const currentSection = allSections.find((s) => s.id === activeSection);
+  const currentIndex = allSections.findIndex((s) => s.id === activeSection);
+  const previousSection = currentIndex > 0 ? allSections[currentIndex - 1] : null;
+  const nextSection = currentIndex < allSections.length - 1 ? allSections[currentIndex + 1] : null;
+
+  const toggleSection = (sectionId: string) => {
+    setExpandedSections((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(sectionId)) {
+        newSet.delete(sectionId);
+      } else {
+        newSet.add(sectionId);
+      }
+      return newSet;
+    });
+  };
+
+  const renderSectionNav = (sectionList: Section[], depth = 0) => {
+    return sectionList.map((section) => {
+      const hasChildren = section.children && section.children.length > 0;
+      const isExpanded = expandedSections.has(section.id);
+
+      return (
+        <div key={section.id}>
+          <div className="flex items-center gap-1">
+            {hasChildren && (
+              <button
+                onClick={() => toggleSection(section.id)}
+                className="p-1 hover:bg-muted rounded"
+              >
+                <ChevronRight
+                  className={`h-4 w-4 transition-transform ${
+                    isExpanded ? "rotate-90" : ""
+                  }`}
+                />
+              </button>
+            )}
+            <button
+              onClick={() => setActiveSection(section.id)}
+              className={`flex flex-1 items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-muted ${
+                activeSection === section.id
+                  ? "bg-muted font-semibold text-primary"
+                  : "text-muted-foreground"
+              }`}
+              style={{ paddingLeft: hasChildren ? "0" : `${depth * 12 + 28}px` }}
+            >
+              {section.title}
+            </button>
+          </div>
+          {hasChildren && isExpanded && (
+            <div style={{ paddingLeft: "12px" }}>
+              {renderSectionNav(section.children, depth + 1)}
+            </div>
+          )}
+        </div>
+      );
+    });
+  };
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
+      {/* Header */}
       <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur">
         <div className="container flex h-16 items-center justify-between px-4">
-          <Link to="/" className="flex items-center gap-2">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-hero">
-              <FileText className="h-5 w-5 text-primary-foreground" />
+          <div className="flex items-center gap-6">
+            <Link to="/" className="flex items-center gap-2">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-hero">
+                <FileText className="h-5 w-5 text-primary-foreground" />
+              </div>
+              <span className="text-xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
+                Leapmile Robotics
+              </span>
+            </Link>
+
+            <nav className="hidden md:flex items-center gap-6 text-sm">
+              <Link to="/" className="transition-colors hover:text-primary">
+                Home
+              </Link>
+              <a href="#" className="transition-colors hover:text-primary">
+                Website
+              </a>
+              <a href="#contact" className="transition-colors hover:text-primary">
+                Contact Us
+              </a>
+            </nav>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <div className="relative hidden sm:block">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                type="search"
+                placeholder="Search documentation..."
+                className="w-[200px] pl-8 lg:w-[300px]"
+              />
             </div>
-            <span className="text-xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
-              Leapmile Robotics
-            </span>
-          </Link>
-          <div className="relative hidden sm:block">
-            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input
-              type="search"
-              placeholder="Search documentation..."
-              className="w-[200px] pl-8 lg:w-[300px]"
-            />
           </div>
         </div>
       </header>
 
       <div className="flex flex-1">
+        {/* Left Sidebar - Navigation */}
         <aside className="w-64 border-r bg-muted/30">
           <ScrollArea className="h-[calc(100vh-4rem)]">
             <div className="p-4">
               <h2 className="mb-4 text-lg font-bold">{title}</h2>
               <nav className="space-y-1">
-                {sections.map((section) => (
-                  <button
-                    key={section.id}
-                    onClick={() => setActiveSection(section.id)}
-                    className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-muted ${
-                      activeSection === section.id
-                        ? "bg-muted font-semibold text-primary"
-                        : "text-muted-foreground"
-                    }`}
-                  >
-                    {section.title}
-                  </button>
-                ))}
+                {renderSectionNav(sections)}
               </nav>
             </div>
           </ScrollArea>
         </aside>
 
+        {/* Main Content Area */}
         <main className="flex-1 overflow-y-auto">
           <div className="container max-w-4xl px-8 py-12">
             {currentSection && (
               <div>
                 <h1 className="mb-6 text-4xl font-bold">{currentSection.title}</h1>
-                <div className="prose prose-lg max-w-none">
+                <div className="prose prose-lg max-w-none dark:prose-invert">
                   {renderContent(currentSection.content)}
+                </div>
+
+                {/* Next/Previous Navigation */}
+                <div className="mt-12 pt-8 border-t flex items-center justify-between">
+                  {previousSection ? (
+                    <Button
+                      variant="outline"
+                      onClick={() => setActiveSection(previousSection.id)}
+                      className="gap-2"
+                    >
+                      <ChevronRight className="h-4 w-4 rotate-180" />
+                      <div className="text-left">
+                        <div className="text-xs text-muted-foreground">Previous</div>
+                        <div className="font-medium">{previousSection.title}</div>
+                      </div>
+                    </Button>
+                  ) : (
+                    <div />
+                  )}
+
+                  {nextSection ? (
+                    <Button
+                      variant="outline"
+                      onClick={() => setActiveSection(nextSection.id)}
+                      className="gap-2"
+                    >
+                      <div className="text-right">
+                        <div className="text-xs text-muted-foreground">Next</div>
+                        <div className="font-medium">{nextSection.title}</div>
+                      </div>
+                      <ChevronRight className="h-4 w-4" />
+                    </Button>
+                  ) : (
+                    <div />
+                  )}
                 </div>
               </div>
             )}
