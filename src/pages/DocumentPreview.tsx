@@ -331,7 +331,7 @@ const DocumentPreview = () => {
         <div key={section.id}>
           <button
             onClick={() => setActiveSection(section.id)}
-            className={`w-full flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-muted ${
+            className={`w-full flex items-start gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-muted ${
               activeSection === section.id
                 ? "bg-muted font-semibold text-primary"
                 : "text-muted-foreground"
@@ -339,10 +339,10 @@ const DocumentPreview = () => {
             style={{ paddingLeft: `${depth * 12 + 12}px` }}
           >
             {/* Icon on the left */}
-            {Icon && <Icon className="h-4 w-4 flex-shrink-0" />}
+            {Icon && <Icon className="h-4 w-4 flex-shrink-0 mt-0.5" />}
             
-            {/* Section title - left aligned and flexible */}
-            <span className="flex-1 text-left truncate">{section.title}</span>
+            {/* Section title - left aligned, wraps to multiple lines */}
+            <span className="flex-1 text-left break-words">{section.title}</span>
             
             {/* Arrow on the right for expandable sections */}
             {hasChildren && (
@@ -351,7 +351,7 @@ const DocumentPreview = () => {
                   e.stopPropagation();
                   toggleSection(section.id);
                 }}
-                className="p-1 hover:bg-muted-foreground/10 rounded flex-shrink-0"
+                className="p-1 hover:bg-muted-foreground/10 rounded flex-shrink-0 mt-0.5"
               >
                 <ChevronRight
                   className={`h-4 w-4 transition-transform ${
