@@ -430,6 +430,253 @@ const DocumentEditor = () => {
     window.open(`/preview/${id}`, "_blank");
   };
 
+  const exportDocument = () => {
+    saveDocument();
+    
+    const flattenSections = (sectionList: Section[]): Section[] => {
+      const result: Section[] = [];
+      sectionList.forEach((section) => {
+        result.push(section);
+        if (section.children) {
+          result.push(...flattenSections(section.children));
+        }
+      });
+      return result;
+    };
+
+    const allSections = flattenSections(sections);
+
+    const renderBlockHTML = (block: Block): string => {
+      if (block.type === "h1") {
+        return `<h1 style="font-size: 1.875rem; font-weight: bold; margin-bottom: 1rem;">${block.content}</h1>`;
+      }
+      if (block.type === "h2") {
+        return `<h2 style="font-size: 1.5rem; font-weight: bold; margin-bottom: 0.75rem;">${block.content}</h2>`;
+      }
+      if (block.type === "h3") {
+        return `<h3 style="font-size: 1.25rem; font-weight: bold; margin-bottom: 0.5rem;">${block.content}</h3>`;
+      }
+      if (block.type === "image" && block.attachmentData) {
+        return `<div style="margin: 1rem 0;"><img src="${block.attachmentData}" alt="${block.content}" style="max-width: 100%; border-radius: 0.5rem; border: 1px solid #e5e7eb;"/><p style="margin-top: 0.5rem; font-size: 0.875rem; color: #6b7280;">${block.content}</p></div>`;
+      }
+      if (block.type === "pdf" && block.attachmentData) {
+        return `<div style="margin: 1rem 0; padding: 1rem; border: 1px solid #e5e7eb; border-radius: 0.5rem; background: #f9fafb;"><strong>${block.content}</strong> (PDF Document)</div>`;
+      }
+      if (block.type === "video" && block.attachmentData) {
+        return `<div style="margin: 1rem 0;"><video controls style="max-width: 100%; border-radius: 0.5rem; border: 1px solid #e5e7eb;" src="${block.attachmentData}"></video><p style="margin-top: 0.5rem; font-size: 0.875rem; color: #6b7280;">${block.content}</p></div>`;
+      }
+      if (block.type === "link") {
+        return `<div style="margin: 1rem 0; padding: 1rem; border: 1px solid #e5e7eb; border-radius: 0.5rem; background: #f9fafb;"><a href="${block.content}" target="_blank" rel="noopener noreferrer" style="color: #2563eb; text-decoration: underline;">${block.content}</a></div>`;
+      }
+      return `<p style="line-height: 1.75; margin-bottom: 1rem; white-space: pre-wrap;">${block.content}</p>`;
+    };
+
+    const renderSectionHTML = (section: Section): string => {
+      const contentHTML = section.content.map(renderBlockHTML).join('\n');
+      return `
+        <section id="section-${section.id}" style="margin-bottom: 3rem;">
+          <h2 style="font-size: 2rem; font-weight: bold; margin-bottom: 1.5rem; color: #1e40af;">${section.title}</h2>
+          ${contentHTML}
+        </section>
+      `;
+    };
+
+    const sidebarHTML = allSections.map((section) => `
+      <a href="#section-${section.id}" style="display: block; padding: 0.5rem 0.75rem; color: #4b5563; text-decoration: none; border-radius: 0.375rem; transition: background-color 0.2s;" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='transparent'">
+        ${section.title}
+      </a>
+    `).join('');
+
+    const htmlContent = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title}</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      line-height: 1.6;
+      color: #1f2937;
+      background: #ffffff;
+    }
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid #e5e7eb;
+      padding: 1rem 2rem;
+    }
+    .header-content {
+      max-width: 1400px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .logo {
+      height: 1.75rem;
+    }
+    .nav-links {
+      display: flex;
+      gap: 1.5rem;
+      font-size: 0.875rem;
+    }
+    .nav-links a {
+      color: #4b5563;
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+    .nav-links a:hover {
+      color: #1e40af;
+    }
+    .container {
+      display: flex;
+      max-width: 1400px;
+      margin: 0 auto;
+      min-height: calc(100vh - 5rem);
+    }
+    .sidebar {
+      width: 256px;
+      border-right: 1px solid #e5e7eb;
+      background: #f9fafb;
+      padding: 1.5rem;
+      position: sticky;
+      top: 5rem;
+      height: calc(100vh - 5rem);
+      overflow-y: auto;
+    }
+    .sidebar h3 {
+      font-size: 0.875rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      color: #1f2937;
+    }
+    .main-content {
+      flex: 1;
+      padding: 2rem 4rem;
+      max-width: 900px;
+    }
+    .navigation-buttons {
+      display: flex;
+      gap: 1rem;
+      margin-top: 3rem;
+      padding-top: 2rem;
+      border-top: 1px solid #e5e7eb;
+    }
+    .nav-button {
+      flex: 1;
+      padding: 1rem 1.5rem;
+      border: 1px solid #e5e7eb;
+      border-radius: 0.5rem;
+      background: white;
+      cursor: pointer;
+      text-decoration: none;
+      color: #1f2937;
+      font-weight: 500;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+    }
+    .nav-button:hover {
+      background: #f9fafb;
+      border-color: #2563eb;
+    }
+    .footer {
+      text-align: center;
+      padding: 2rem;
+      font-size: 0.875rem;
+      color: #6b7280;
+      border-top: 1px solid #e5e7eb;
+    }
+    @media (max-width: 768px) {
+      .sidebar {
+        display: none;
+      }
+      .main-content {
+        padding: 1rem 1.5rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <div class="header-content">
+      <img src="https://leapmile-website.blr1.digitaloceanspaces.com/leapmile.png" alt="Leapmile Robotics" class="logo" />
+      <nav class="nav-links">
+        <a href="javascript:location.reload()">Home</a>
+        <a href="https://www.leapmile.com">Website</a>
+        <a href="https://www.leapmile.com/#contact">Contact Us</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="container">
+    <aside class="sidebar">
+      <h3>Content Overview</h3>
+      ${sidebarHTML}
+    </aside>
+
+    <main class="main-content">
+      <h1 style="font-size: 2.5rem; font-weight: bold; margin-bottom: 2rem; background: linear-gradient(135deg, #1e40af, #3b82f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">${title}</h1>
+      
+      ${allSections.map(renderSectionHTML).join('\n')}
+
+      <div class="navigation-buttons">
+        ${allSections.length > 1 ? `
+          <button class="nav-button" onclick="window.scrollTo({top: 0, behavior: 'smooth'})">
+            ← First Section
+          </button>
+          <button class="nav-button" onclick="window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'})">
+            Last Section →
+          </button>
+        ` : ''}
+      </div>
+    </main>
+  </div>
+
+  <footer class="footer">
+    Last updated: ${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
+  </footer>
+
+  <script>
+    // Smooth scroll for sidebar links
+    document.querySelectorAll('.sidebar a').forEach(link => {
+      link.addEventListener('click', (e) => {
+        e.preventDefault();
+        const target = document.querySelector(link.getAttribute('href'));
+        if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      });
+    });
+  </script>
+</body>
+</html>`;
+
+    const blob = new Blob([htmlContent], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${title.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.html`;
+    link.click();
+    URL.revokeObjectURL(url);
+
+    toast({
+      title: "Document exported",
+      description: "Your document has been exported as a standalone HTML file.",
+    });
+  };
+
   return (
     <div className="flex min-h-screen flex-col bg-background">
       <Navigation />
@@ -450,7 +697,7 @@ const DocumentEditor = () => {
               <Eye className="h-4 w-4" />
               Preview
             </Button>
-            <Button variant="ghost" size="sm" className="gap-2">
+            <Button variant="ghost" size="sm" className="gap-2" onClick={exportDocument}>
               <Download className="h-4 w-4" />
               Export
             </Button>
