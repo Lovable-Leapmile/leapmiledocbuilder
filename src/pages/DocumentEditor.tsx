@@ -805,14 +805,10 @@ const DocumentEditor = () => {
     // Initialize expanded sections on page load
     function initializeExpandedSections() {
       expandedSections.forEach(sectionId => {
-        const subsectionsEl = document.getElementById('subsections-' + sectionId);
-        const chevronEl = document.getElementById('chevron-' + sectionId);
-        if (subsectionsEl) {
-          subsectionsEl.classList.remove('hidden');
-        }
-        if (chevronEl) {
-          chevronEl.style.transform = 'rotate(90deg)';
-        }
+        const subsectionsEls = document.querySelectorAll('#subsections-' + sectionId);
+        const chevronEls = document.querySelectorAll('#chevron-' + sectionId);
+        subsectionsEls.forEach(el => el.classList.remove('hidden'));
+        chevronEls.forEach(el => { el.style.transform = 'rotate(90deg)'; });
       });
     }
 
@@ -872,13 +868,11 @@ const DocumentEditor = () => {
       // Expand all parent sections
       const parentIds = findParentIds(sectionId);
       parentIds.forEach(parentId => {
-        const subsectionsEl = document.getElementById('subsections-' + parentId);
-        const chevronEl = document.getElementById('chevron-' + parentId);
-        if (subsectionsEl && chevronEl) {
-          subsectionsEl.classList.remove('hidden');
-          chevronEl.style.transform = 'rotate(90deg)';
-          expandedSections.add(parentId);
-        }
+        const subsectionsEls = document.querySelectorAll('#subsections-' + parentId);
+        const chevronEls = document.querySelectorAll('#chevron-' + parentId);
+        subsectionsEls.forEach(el => el.classList.remove('hidden'));
+        chevronEls.forEach(el => { el.style.transform = 'rotate(90deg)'; });
+        expandedSections.add(parentId);
       });
       
       // Hide all sections
@@ -930,25 +924,26 @@ const DocumentEditor = () => {
     }
 
     function toggleSubSection(sectionId) {
-      const subsectionsEl = document.getElementById('subsections-' + sectionId);
-      const chevronEl = document.getElementById('chevron-' + sectionId);
-      
-      if (subsectionsEl && chevronEl) {
-        const isHidden = subsectionsEl.classList.contains('hidden');
-        
-        if (isHidden) {
-          // Expand
-          subsectionsEl.classList.remove('hidden');
-          chevronEl.style.transform = 'rotate(90deg)';
+      const subsectionsEls = document.querySelectorAll('#subsections-' + sectionId);
+      const chevronEls = document.querySelectorAll('#chevron-' + sectionId);
+
+      if (subsectionsEls.length > 0) {
+        // Determine target state based on current visibility of all matching elements
+        const shouldExpand = Array.from(subsectionsEls).every(el => el.classList.contains('hidden'));
+
+        if (shouldExpand) {
+          // Expand all
+          subsectionsEls.forEach(el => el.classList.remove('hidden'));
+          chevronEls.forEach(el => { el.style.transform = 'rotate(90deg)'; });
           expandedSections.add(sectionId);
         } else {
-          // Collapse
-          subsectionsEl.classList.add('hidden');
-          chevronEl.style.transform = 'rotate(0deg)';
+          // Collapse all
+          subsectionsEls.forEach(el => el.classList.add('hidden'));
+          chevronEls.forEach(el => { el.style.transform = 'rotate(0deg)'; });
           expandedSections.delete(sectionId);
         }
       }
-      
+
       return false; // Prevent default
     }
 
