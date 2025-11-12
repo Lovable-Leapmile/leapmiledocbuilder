@@ -10,19 +10,27 @@ export const Navigation = () => {
   const { signOut } = useAuth();
 
   const handleLogout = async () => {
-    const { error } = await signOut();
-    if (error) {
-      toast({
-        title: "Error",
-        description: "Failed to logout. Please try again.",
-        variant: "destructive",
-      });
-    } else {
+    try {
+      const { error } = await signOut();
+      if (error) throw error;
+      
+      // Clear any local state
+      localStorage.clear();
+      
       toast({
         title: "Logged out",
         description: "You have been logged out successfully.",
       });
-      navigate("/login");
+      
+      // Force navigation to login
+      window.location.href = "/login";
+    } catch (error: any) {
+      console.error("Logout error:", error);
+      toast({
+        title: "Error",
+        description: error?.message || "Failed to logout. Please try again.",
+        variant: "destructive",
+      });
     }
   };
 
