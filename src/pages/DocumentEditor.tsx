@@ -621,12 +621,17 @@ const DocumentEditor = () => {
         const isFirst = depth === 0 && sectionList.indexOf(section) === 0;
         const isExpanded = sectionsToExpand.has(section.id);
         return `
-          <div>
-            <button onclick="showSection('${section.id}'); closeMobileMenu(); return false;" data-section="${section.id}" class="sidebar-btn${isFirst ? ' active' : ''} w-full flex items-start gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-gray-100 ${isFirst ? 'bg-gray-100 font-semibold text-blue-800' : 'text-gray-600'}" style="padding-left: ${depth * 12 + 12}px;">
+          <div class="nav-item">
+            <button onclick="showSection('${section.id}'); closeMobileMenu(); return false;" data-section="${section.id}" class="sidebar-btn${isFirst ? ' active' : ''} group w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-all hover:bg-gray-100 ${isFirst ? 'bg-gray-100 font-semibold text-blue-800' : 'text-gray-700'}" style="padding-left: ${depth * 12 + 8}px;">
+              ${hasChildren ? `
+                <button onclick="event.stopPropagation(); toggleSubSection('${section.id}');" class="p-0.5 hover:bg-gray-200 rounded transition-all flex-shrink-0">
+                  <svg id="chevron-${section.id}" class="h-4 w-4 transition-transform${isExpanded ? ' rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                </button>
+              ` : '<span class="w-5"></span>'}
+              <svg class="h-4 w-4 flex-shrink-0 opacity-70 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
               <span class="flex-1 text-left break-words">${escapeHtml(section.title)}</span>
-              ${hasChildren ? `<button onclick="event.stopPropagation(); toggleSubSection('${section.id}');" class="p-1 hover:bg-gray-200 rounded flex-shrink-0"><svg id="chevron-${section.id}" class="h-4 w-4 transition-transform${isExpanded ? ' rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg></button>` : ''}
             </button>
-            ${hasChildren ? `<div id="subsections-${section.id}" class="${isExpanded ? '' : 'hidden'} ml-2">${renderSidebarNav(section.children, depth + 1)}</div>` : ''}
+            ${hasChildren ? `<div id="subsections-${section.id}" class="${isExpanded ? '' : 'hidden'}">${renderSidebarNav(section.children!, depth + 1)}</div>` : ''}
           </div>
         `;
       }).join('');
@@ -643,7 +648,29 @@ const DocumentEditor = () => {
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html { scroll-behavior: smooth; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; }
-    .sidebar-btn.active { background: #f3f4f6 !important; font-weight: 600; color: #1e3a8a !important; }
+    
+    /* Sidebar Navigation Styles */
+    .nav-item { margin-bottom: 2px; }
+    .sidebar-btn { 
+      position: relative;
+      overflow: hidden;
+    }
+    .sidebar-btn:hover { 
+      background: #f3f4f6 !important;
+      color: #111827 !important;
+    }
+    .sidebar-btn.active { 
+      background: #f3f4f6 !important;
+      font-weight: 600 !important;
+      color: #1e3a8a !important;
+    }
+    .sidebar-btn svg {
+      transition: opacity 0.2s ease;
+    }
+    .sidebar-btn:hover svg {
+      opacity: 1 !important;
+    }
+    
     .section-content { display: none; }
     .section-content.active { display: block; }
     #mobileMenu { display: none; opacity: 0; transition: opacity 0.3s ease; }
