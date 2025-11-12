@@ -541,29 +541,28 @@ const DocumentEditor = () => {
       const contentHTML = section.content.map(renderBlockHTML).join('\n');
       const prev = index > 0 ? allSections[index - 1] : null;
       const next = index < allSections.length - 1 ? allSections[index + 1] : null;
-      const isFirst = index === 0;
       
       return `
-        <div id="section-${section.id}" class="section-content${isFirst ? ' active' : ''}" style="${isFirst ? '' : 'display: none;'}">
+        <section id="section-${section.id}" class="section-content py-8">
           <h1 class="mb-6 text-4xl font-bold">${section.title}</h1>
           <div class="prose prose-lg max-w-none">
             ${contentHTML}
           </div>
           <div class="mt-12 pt-8 border-t flex gap-4">
             ${prev ? `
-              <button onclick="showSection('${prev.id}')" class="nav-btn flex gap-2 flex-1 py-4 px-4 border rounded-lg hover:bg-gray-50">
+              <a href="#section-${prev.id}" onclick="scrollToSection('${prev.id}'); return false;" class="nav-btn flex gap-2 flex-1 py-4 px-4 border rounded-lg hover:bg-gray-50">
                 <svg class="h-5 w-5 rotate-180 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
                 <div class="text-left flex-1"><div class="text-xs text-gray-500">Previous</div><div class="font-medium">${prev.title}</div></div>
-              </button>
+              </a>
             ` : '<div class="flex-1"></div>'}
             ${next ? `
-              <button onclick="showSection('${next.id}')" class="nav-btn flex gap-2 flex-1 py-4 px-4 border rounded-lg hover:bg-gray-50">
+              <a href="#section-${next.id}" onclick="scrollToSection('${next.id}'); return false;" class="nav-btn flex gap-2 flex-1 py-4 px-4 border rounded-lg hover:bg-gray-50">
                 <div class="text-right flex-1"><div class="text-xs text-gray-500">Next</div><div class="font-medium">${next.title}</div></div>
                 <svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
-              </button>
+              </a>
             ` : '<div class="flex-1"></div>'}
           </div>
-        </div>
+        </section>
       `;
     };
 
@@ -573,10 +572,10 @@ const DocumentEditor = () => {
         const isFirstSection = isFirst && index === 0 && depth === 0;
         return `
           <div>
-            <button onclick="showSection('${section.id}')" data-section="${section.id}" class="sidebar-btn${isFirstSection ? ' active' : ''} w-full flex items-start gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-gray-100 text-gray-600" style="padding-left: ${depth * 12 + 12}px;">
+            <a href="#section-${section.id}" onclick="scrollToSection('${section.id}'); return false;" data-section="${section.id}" class="sidebar-btn${isFirstSection ? ' active' : ''} w-full flex items-start gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-gray-100 text-gray-600" style="padding-left: ${depth * 12 + 12}px;">
               <span class="flex-1 text-left">${section.title}</span>
               ${hasChildren ? '<svg class="h-4 w-4 rotate-90 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>' : ''}
-            </button>
+            </a>
             ${hasChildren ? `<div>${renderSidebarNav(section.children, depth + 1, false)}</div>` : ''}
           </div>
         `;
@@ -592,10 +591,10 @@ const DocumentEditor = () => {
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; }
     .sidebar-btn.active { background: #f3f4f6; font-weight: 600; color: #1e3a8a; }
-    .section-content { display: none; }
-    .section-content.active { display: block; }
+    .section-content { display: block; }
   </style>
 </head>
 <body class="bg-white text-gray-800">
@@ -646,19 +645,17 @@ const DocumentEditor = () => {
     let currentSection = '${allSections[0]?.id || '1'}';
     const sections = ${JSON.stringify(allSections.map(s => ({ id: s.id, title: s.title, content: s.content.map(b => ({ type: b.type, content: b.content })) })))};
 
-    function showSection(sectionId) {
-      currentSection = sectionId;
-      document.querySelectorAll('.section-content').forEach(el => el.classList.remove('active'));
+    function scrollToSection(sectionId) {
       document.querySelectorAll('.sidebar-btn').forEach(el => el.classList.remove('active'));
-      
-      const section = document.getElementById('section-' + sectionId);
-      if (section) {
-        section.classList.add('active');
-        section.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
-      
       const btn = document.querySelector('[data-section="' + sectionId + '"]');
       if (btn) btn.classList.add('active');
+      const el = document.getElementById('section-' + sectionId);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    // Backward compatibility for existing calls
+    function showSection(sectionId) {
+      scrollToSection(sectionId);
     }
 
     function clearSearch() {
