@@ -159,29 +159,57 @@ const DocumentEditor = () => {
   }, [title, sections, id, user]);
 
   const saveDocument = async () => {
-    if (!user || !id || id === "new") return;
+    if (!user) {
+      toast({
+        title: "Authentication required",
+        description: "Please log in to save your document.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!id || id === "new") {
+      toast({
+        title: "Error",
+        description: "Cannot save a new document. Please wait for it to be created.",
+        variant: "destructive",
+      });
+      return;
+    }
 
     const description = sections[0]?.content[0]?.content?.substring(0, 100) || "";
     
-    const { error } = await supabase
-      .from("documents")
-      .update({
-        title,
-        description,
-        content: { sections } as any,
-      })
-      .eq("id", id);
+    try {
+      const { error } = await supabase
+        .from("documents")
+        .update({
+          title,
+          description,
+          content: { sections } as any,
+          last_modified: new Date().toISOString(),
+        })
+        .eq("id", id)
+        .eq("user_id", user.id);
 
-    if (error) {
+      if (error) {
+        console.error("Save error:", error);
+        toast({
+          title: "Error",
+          description: `Failed to save document: ${error.message}`,
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Document saved",
+          description: "Your changes have been saved successfully.",
+        });
+      }
+    } catch (err) {
+      console.error("Save exception:", err);
       toast({
         title: "Error",
-        description: "Failed to save document.",
+        description: "An unexpected error occurred while saving.",
         variant: "destructive",
-      });
-    } else {
-      toast({
-        title: "Document saved",
-        description: "Your changes have been saved successfully.",
       });
     }
   };
@@ -468,8 +496,8 @@ const DocumentEditor = () => {
     window.open(`/preview/${id}`, "_blank");
   };
 
-  const exportDocument = () => {
-    saveDocument();
+  const exportDocument = async () => {
+    await saveDocument();
     
     const flattenSections = (sectionList: Section[]): Section[] => {
       const result: Section[] = [];
@@ -575,6 +603,25 @@ const DocumentEditor = () => {
     .nav-links a:hover {
       color: #1e40af;
     }
+    .search-container {
+      position: relative;
+    }
+    .search-input {
+      padding: 0.5rem 1rem 0.5rem 2.5rem;
+      border: 1px solid #e5e7eb;
+      border-radius: 0.375rem;
+      width: 300px;
+      font-size: 0.875rem;
+    }
+    .search-icon {
+      position: absolute;
+      left: 0.75rem;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 1rem;
+      height: 1rem;
+      color: #9ca3af;
+    }
     .container {
       display: flex;
       max-width: 1400px;
@@ -597,10 +644,40 @@ const DocumentEditor = () => {
       margin-bottom: 1rem;
       color: #1f2937;
     }
+    .sidebar a {
+      display: block;
+      padding: 0.5rem 0.75rem;
+      color: #4b5563;
+      text-decoration: none;
+      border-radius: 0.375rem;
+      transition: background-color 0.2s;
+    }
+    .sidebar a:hover, .sidebar a.active {
+      background: #e5e7eb;
+      color: #1e40af;
+    }
     .main-content {
       flex: 1;
       padding: 2rem 4rem;
       max-width: 900px;
+    }
+    h1 {
+      font-size: 2.5rem;
+      font-weight: bold;
+      margin-bottom: 2rem;
+      background: linear-gradient(135deg, #1e40af, #3b82f6);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    h2 {
+      font-size: 2rem;
+      font-weight: bold;
+      margin-bottom: 1.5rem;
+      color: #1e40af;
+    }
+    section {
+      margin-bottom: 3rem;
     }
     .navigation-buttons {
       display: flex;
@@ -616,14 +693,9 @@ const DocumentEditor = () => {
       border-radius: 0.5rem;
       background: white;
       cursor: pointer;
-      text-decoration: none;
       color: #1f2937;
       font-weight: 500;
       transition: all 0.2s;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 0.5rem;
     }
     .nav-button:hover {
       background: #f9fafb;
@@ -643,6 +715,9 @@ const DocumentEditor = () => {
       .main-content {
         padding: 1rem 1.5rem;
       }
+      .search-input {
+        width: 200px;
+      }
     }
   </style>
 </head>
@@ -655,6 +730,12 @@ const DocumentEditor = () => {
         <a href="https://www.leapmile.com">Website</a>
         <a href="https://www.leapmile.com/#contact">Contact Us</a>
       </nav>
+      <div class="search-container">
+        <svg class="search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+        </svg>
+        <input type="search" class="search-input" placeholder="Search in document..." id="searchInput">
+      </div>
     </div>
   </header>
 
@@ -665,7 +746,7 @@ const DocumentEditor = () => {
     </aside>
 
     <main class="main-content">
-      <h1 style="font-size: 2.5rem; font-weight: bold; margin-bottom: 2rem; background: linear-gradient(135deg, #1e40af, #3b82f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">${title}</h1>
+      <h1>${title}</h1>
       
       ${allSections.map(renderSectionHTML).join('\n')}
 
@@ -696,6 +777,65 @@ const DocumentEditor = () => {
           target.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
       });
+    });
+
+    // Search functionality
+    const searchInput = document.getElementById('searchInput');
+    let sections = [];
+    
+    // Collect all sections for search
+    document.querySelectorAll('section').forEach(section => {
+      sections.push({
+        id: section.id,
+        title: section.querySelector('h2')?.textContent || '',
+        content: section.textContent || ''
+      });
+    });
+
+    searchInput.addEventListener('input', (e) => {
+      const query = e.target.value.toLowerCase().trim();
+      
+      if (!query) {
+        // Reset highlighting
+        document.querySelectorAll('section').forEach(section => {
+          section.style.display = 'block';
+        });
+        return;
+      }
+
+      // Search and highlight
+      document.querySelectorAll('section').forEach(section => {
+        const content = section.textContent.toLowerCase();
+        if (content.includes(query)) {
+          section.style.display = 'block';
+        } else {
+          section.style.display = 'none';
+        }
+      });
+    });
+
+    // Update active sidebar link on scroll
+    const observerOptions = {
+      root: null,
+      rootMargin: '-20% 0px -70% 0px',
+      threshold: 0
+    };
+
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          document.querySelectorAll('.sidebar a').forEach(link => {
+            link.classList.remove('active');
+            if (link.getAttribute('href') === '#' + entry.target.id) {
+              link.classList.add('active');
+            }
+          });
+        }
+      });
+    }, observerOptions);
+
+    document.querySelectorAll('section').forEach(section => {
+      observer.observe(section);
     });
   </script>
 </body>

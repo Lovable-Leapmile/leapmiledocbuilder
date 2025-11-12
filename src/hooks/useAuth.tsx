@@ -27,7 +27,9 @@ export const useAuth = () => {
     return () => subscription.unsubscribe();
   }, []);
 
-  const signIn = async (email: string, password: string) => {
+  const signIn = async (mobileNumber: string, password: string) => {
+    // Use mobile number as email (format: mobilenumber@app.local)
+    const email = `${mobileNumber}@app.local`;
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,
@@ -35,8 +37,10 @@ export const useAuth = () => {
     return { data, error };
   };
 
-  const signUp = async (email: string, password: string, mobileNumber: string) => {
+  const signUp = async (mobileNumber: string, password: string) => {
     const redirectUrl = `${window.location.origin}/`;
+    // Use mobile number as email (format: mobilenumber@app.local)
+    const email = `${mobileNumber}@app.local`;
     
     const { data, error } = await supabase.auth.signUp({
       email,

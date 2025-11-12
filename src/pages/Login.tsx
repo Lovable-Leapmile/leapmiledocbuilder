@@ -9,7 +9,6 @@ import { toast } from "sonner";
 import { useAuth } from "@/hooks/useAuth";
 
 const Login = () => {
-  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [mobileNumber, setMobileNumber] = useState("");
   const [loading, setLoading] = useState(false);
@@ -26,7 +25,13 @@ const Login = () => {
     e.preventDefault();
     setLoading(true);
     
-    const { error } = await signIn(email, password);
+    if (!mobileNumber || !password) {
+      toast.error("Please fill in all fields");
+      setLoading(false);
+      return;
+    }
+    
+    const { error } = await signIn(mobileNumber, password);
     
     if (error) {
       toast.error(error.message || "Login failed. Please check your credentials.");
@@ -42,13 +47,19 @@ const Login = () => {
     e.preventDefault();
     setLoading(true);
     
-    if (!email || !password || !mobileNumber) {
+    if (!password || !mobileNumber) {
       toast.error("Please fill in all fields");
       setLoading(false);
       return;
     }
 
-    const { error } = await signUp(email, password, mobileNumber);
+    if (password.length < 6) {
+      toast.error("Password must be at least 6 characters");
+      setLoading(false);
+      return;
+    }
+
+    const { error } = await signUp(mobileNumber, password);
     
     if (error) {
       toast.error(error.message || "Signup failed. Please try again.");
@@ -76,13 +87,13 @@ const Login = () => {
             <TabsContent value="login">
               <form onSubmit={handleLogin} className="space-y-4">
                 <div>
-                  <Label htmlFor="login-email">Email</Label>
+                  <Label htmlFor="login-mobile">Mobile Number</Label>
                   <Input
-                    id="login-email"
-                    type="email"
-                    placeholder="your@email.com"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    id="login-mobile"
+                    type="tel"
+                    placeholder="1234567890"
+                    value={mobileNumber}
+                    onChange={(e) => setMobileNumber(e.target.value)}
                     required
                   />
                 </div>
@@ -106,21 +117,10 @@ const Login = () => {
             <TabsContent value="signup">
               <form onSubmit={handleSignup} className="space-y-4">
                 <div>
-                  <Label htmlFor="signup-email">Email</Label>
-                  <Input
-                    id="signup-email"
-                    type="email"
-                    placeholder="your@email.com"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    required
-                  />
-                </div>
-                <div>
                   <Label htmlFor="signup-mobile">Mobile Number</Label>
                   <Input
                     id="signup-mobile"
-                    type="text"
+                    type="tel"
                     placeholder="1234567890"
                     value={mobileNumber}
                     onChange={(e) => setMobileNumber(e.target.value)}
