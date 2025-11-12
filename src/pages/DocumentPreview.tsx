@@ -6,6 +6,8 @@ import { Search, FileText, ChevronRight, X, Home, Info, Users, Settings, BookOpe
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
 import { LucideIcon } from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 
 interface Block {
   id: string;
@@ -42,16 +44,29 @@ const DocumentPreview = () => {
   const [searchResults, setSearchResults] = useState<Array<{sectionId: string; sectionTitle: string; matchText: string}>>([]);
 
   useEffect(() => {
-    const saved = localStorage.getItem(`doc-${id}`);
-    if (saved) {
-      const data = JSON.parse(saved);
-      setTitle(data.title || "Untitled Document");
-      setSections(data.sections || []);
-      setAttachments(data.attachments || []);
-      if (data.sections && data.sections.length > 0) {
-        setActiveSection(data.sections[0].id);
+    const load = async () => {
+      if (!id) return;
+      // Load latest from backend to reflect saved editor content
+      const { data, error } = await supabase
+        .from("documents")
+        .select("*")
+        .eq("id", id)
+        .maybeSingle();
+
+      if (error) {
+        console.error("Preview load error:", error);
+        return;
       }
-    }
+
+      if (data) {
+        setTitle(data.title || "Untitled Document");
+        const content = (data.content as { sections?: Section[] }) || {};
+        const loadedSections = content.sections || [{ id: "1", title: "Introduction", content: [] }];
+        setSections(loadedSections);
+        if (loadedSections.length > 0) setActiveSection(loadedSections[0].id);
+      }
+    };
+    load();
   }, [id]);
 
   // Search functionality

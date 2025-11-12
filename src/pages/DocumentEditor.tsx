@@ -491,8 +491,8 @@ const DocumentEditor = () => {
     });
   };
 
-  const openPreview = () => {
-    saveDocument();
+  const openPreview = async () => {
+    await saveDocument();
     window.open(`/preview/${id}`, "_blank");
   };
 
