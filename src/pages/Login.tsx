@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -13,7 +13,7 @@ const Login = () => {
   const [mobileNumber, setMobileNumber] = useState("");
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
-  const { signIn, signUp, user } = useAuth();
+  const { signIn, user } = useAuth();
 
   useEffect(() => {
     if (user) {
@@ -43,32 +43,6 @@ const Login = () => {
     setLoading(false);
   };
 
-  const handleSignup = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    
-    if (!password || !mobileNumber) {
-      toast.error("Please fill in all fields");
-      setLoading(false);
-      return;
-    }
-
-    if (password.length < 6) {
-      toast.error("Password must be at least 6 characters");
-      setLoading(false);
-      return;
-    }
-
-    const { error } = await signUp(mobileNumber, password);
-    
-    if (error) {
-      toast.error(error.message || "Signup failed. Please try again.");
-    } else {
-      toast.success("Account created successfully! You can now login.");
-    }
-    
-    setLoading(false);
-  };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
@@ -78,73 +52,33 @@ const Login = () => {
           <CardDescription>Create and manage your technical documentation</CardDescription>
         </CardHeader>
         <CardContent>
-          <Tabs defaultValue="login" className="w-full">
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="login">Login</TabsTrigger>
-              <TabsTrigger value="signup">Sign Up</TabsTrigger>
-            </TabsList>
-            
-            <TabsContent value="login">
-              <form onSubmit={handleLogin} className="space-y-4">
-                <div>
-                  <Label htmlFor="login-mobile">Mobile Number</Label>
-                  <Input
-                    id="login-mobile"
-                    type="tel"
-                    placeholder="1234567890"
-                    value={mobileNumber}
-                    onChange={(e) => setMobileNumber(e.target.value)}
-                    required
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="login-password">Password</Label>
-                  <Input
-                    id="login-password"
-                    type="password"
-                    placeholder="Enter your password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                  />
-                </div>
-                <Button type="submit" className="w-full" disabled={loading}>
-                  {loading ? "Logging in..." : "Login"}
-                </Button>
-              </form>
-            </TabsContent>
-            
-            <TabsContent value="signup">
-              <form onSubmit={handleSignup} className="space-y-4">
-                <div>
-                  <Label htmlFor="signup-mobile">Mobile Number</Label>
-                  <Input
-                    id="signup-mobile"
-                    type="tel"
-                    placeholder="1234567890"
-                    value={mobileNumber}
-                    onChange={(e) => setMobileNumber(e.target.value)}
-                    required
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="signup-password">Password</Label>
-                  <Input
-                    id="signup-password"
-                    type="password"
-                    placeholder="Create a password (min 6 characters)"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                    minLength={6}
-                  />
-                </div>
-                <Button type="submit" className="w-full" disabled={loading}>
-                  {loading ? "Creating account..." : "Sign Up"}
-                </Button>
-              </form>
-            </TabsContent>
-          </Tabs>
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div>
+              <Label htmlFor="login-mobile">Mobile Number</Label>
+              <Input
+                id="login-mobile"
+                type="tel"
+                placeholder="9876543210"
+                value={mobileNumber}
+                onChange={(e) => setMobileNumber(e.target.value)}
+                required
+              />
+            </div>
+            <div>
+              <Label htmlFor="login-password">Password</Label>
+              <Input
+                id="login-password"
+                type="password"
+                placeholder="Enter your password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>
+              {loading ? "Logging in..." : "Login"}
+            </Button>
+          </form>
         </CardContent>
       </Card>
     </div>
