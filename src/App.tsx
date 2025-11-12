@@ -8,10 +8,16 @@ import Login from "./pages/Login";
 import DocumentEditor from "./pages/DocumentEditor";
 import DocumentPreview from "./pages/DocumentPreview";
 import NotFound from "./pages/NotFound";
+import { useAuth } from "./hooks/useAuth";
 
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
-  const isAuthenticated = localStorage.getItem("isAuthenticated") === "true";
-  return isAuthenticated ? <>{children}</> : <Navigate to="/login" />;
+  const { user, loading } = useAuth();
+  
+  if (loading) {
+    return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
+  }
+  
+  return user ? <>{children}</> : <Navigate to="/login" />;
 };
 
 const queryClient = new QueryClient();

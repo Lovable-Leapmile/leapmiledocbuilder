@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Plus, Search, FileText, Zap, Users } from "lucide-react";
 import { Link } from "react-router-dom";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 const Index = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [recentProjects, setRecentProjects] = useState<Array<{
@@ -14,18 +16,39 @@ const Index = () => {
     lastModified: string;
     author: string;
   }>>([]);
+  const { user } = useAuth();
 
-  // Load projects from localStorage
-  const loadProjects = () => {
-    const savedProjects = localStorage.getItem("projects");
-    if (savedProjects) {
-      setRecentProjects(JSON.parse(savedProjects));
+  // Load projects from database
+  const loadProjects = async () => {
+    if (!user) return;
+
+    const { data, error } = await supabase
+      .from("documents")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("last_modified", { ascending: false });
+
+    if (error) {
+      console.error("Error loading projects:", error);
+      return;
+    }
+
+    if (data) {
+      setRecentProjects(
+        data.map((doc) => ({
+          id: doc.id,
+          title: doc.title,
+          description: doc.description || "No description",
+          lastModified: new Date(doc.last_modified).toLocaleString(),
+          author: user.email || "User",
+        }))
+      );
     }
   };
 
   useEffect(() => {
     loadProjects();
-  }, []);
+  }, [user]);
   return <div className="min-h-screen bg-background">
       <Navigation />
 

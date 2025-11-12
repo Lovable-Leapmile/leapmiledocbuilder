@@ -21,7 +21,7 @@ import {
   X,
   AlertCircle,
 } from "lucide-react";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import {
   AlertDialog,
@@ -34,6 +34,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 
 interface Block {
   id: string;
@@ -59,7 +61,9 @@ interface Attachment {
 
 const DocumentEditor = () => {
   const { id } = useParams();
+  const navigate = useNavigate();
   const { toast } = useToast();
+  const { user } = useAuth();
   const [title, setTitle] = useState("Untitled Document");
   const [sections, setSections] = useState<Section[]>([
     { id: "1", title: "Introduction", content: [] },
@@ -75,77 +79,111 @@ const DocumentEditor = () => {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [deleteSectionId, setDeleteSectionId] = useState<string | null>(null);
 
-  // Load document from localStorage
+  // Load document from database
   useEffect(() => {
-    const saved = localStorage.getItem(`doc-${id}`);
-    if (saved) {
-      const data = JSON.parse(saved);
-      setTitle(data.title);
-      setSections(data.sections);
-      setAttachments(data.attachments || []);
-    }
-  }, [id]);
+    const loadDocument = async () => {
+      if (!user || !id) return;
 
-  // Auto-save document
-  useEffect(() => {
-    const autoSave = setTimeout(() => {
-      const data = { title, sections, attachments };
-      localStorage.setItem(`doc-${id}`, JSON.stringify(data));
-      
-      // Update projects list
-      const savedProjects = localStorage.getItem("projects");
-      const projects = savedProjects ? JSON.parse(savedProjects) : [];
-      
-      const projectIndex = projects.findIndex((p: any) => p.id === id);
-      const projectData = {
-        id: id || Date.now().toString(),
-        title,
-        description: sections[0]?.content[0]?.content?.substring(0, 100) || "No description",
-        lastModified: new Date().toLocaleString(),
-        author: "User"
-      };
-      
-      if (projectIndex >= 0) {
-        projects[projectIndex] = projectData;
+      if (id === "new") {
+        // Create new document
+        const { data, error } = await supabase
+          .from("documents")
+          .insert({
+            user_id: user.id,
+            title: "Untitled Document",
+            description: "",
+            content: { sections: [{ id: "1", title: "Introduction", content: [] }] } as any,
+          })
+          .select()
+          .single();
+
+        if (error) {
+          console.error("Error creating document:", error);
+          toast({
+            title: "Error",
+            description: "Failed to create document.",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        if (data) {
+          navigate(`/editor/${data.id}`, { replace: true });
+        }
       } else {
-        projects.unshift(projectData);
-      }
-      
-      localStorage.setItem("projects", JSON.stringify(projects));
-    }, 1000);
-    
-    return () => clearTimeout(autoSave);
-  }, [title, sections, attachments, id]);
+        // Load existing document
+        const { data, error } = await supabase
+          .from("documents")
+          .select("*")
+          .eq("id", id)
+          .single();
 
-  const saveDocument = () => {
-    const data = { title, sections, attachments };
-    localStorage.setItem(`doc-${id}`, JSON.stringify(data));
-    
-    // Update projects list
-    const savedProjects = localStorage.getItem("projects");
-    const projects = savedProjects ? JSON.parse(savedProjects) : [];
-    
-    const projectIndex = projects.findIndex((p: any) => p.id === id);
-    const projectData = {
-      id: id || Date.now().toString(),
-      title,
-      description: sections[0]?.content[0]?.content?.substring(0, 100) || "No description",
-      lastModified: new Date().toLocaleString(),
-      author: "User"
+        if (error) {
+          console.error("Error loading document:", error);
+          return;
+        }
+
+        if (data) {
+          setTitle(data.title);
+          const content = data.content as { sections?: Section[] };
+          setSections(content.sections || [{ id: "1", title: "Introduction", content: [] }]);
+        }
+      }
     };
+
+    loadDocument();
+  }, [id, user, navigate]);
+
+  // Auto-save document to database
+  useEffect(() => {
+    if (!user || !id || id === "new") return;
+
+    const autoSave = setTimeout(async () => {
+      const description = sections[0]?.content[0]?.content?.substring(0, 100) || "";
+      
+      const { error } = await supabase
+        .from("documents")
+        .update({
+          title,
+          description,
+          content: { sections } as any,
+        })
+        .eq("id", id);
+
+      if (error) {
+        console.error("Auto-save error:", error);
+      }
+    }, 2000);
+
+    return () => clearTimeout(autoSave);
+  }, [title, sections, id, user]);
+
+  const saveDocument = async () => {
+    if (!user || !id || id === "new") return;
+
+    const description = sections[0]?.content[0]?.content?.substring(0, 100) || "";
     
-    if (projectIndex >= 0) {
-      projects[projectIndex] = projectData;
+    const { error } = await supabase
+      .from("documents")
+      .update({
+        title,
+        description,
+        content: { sections } as any,
+      })
+      .eq("id", id);
+
+    if (error) {
+      toast({
+        title: "Error",
+        description: "Failed to save document.",
+        variant: "destructive",
+      });
     } else {
-      projects.unshift(projectData);
+      toast({
+        title: "Document saved",
+        description: "Your changes have been saved successfully.",
+      });
     }
-    
-    localStorage.setItem("projects", JSON.stringify(projects));
-    
-    toast({
-      title: "Document saved",
-      description: "Your changes have been saved successfully.",
-    });
   };
 
   const addSection = () => {
@@ -713,19 +751,21 @@ const DocumentEditor = () => {
         {/* Left Sidebar - Document Structure */}
         <aside className="w-64 border-r bg-muted/30 p-4">
           <div className="mb-4">
-            <h3 className="mb-3 text-sm font-semibold">Document Structure</h3>
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-sm font-semibold">Document Structure</h3>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={addSection}
+                title="Add Section"
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
+            </div>
             <ScrollArea className="h-[calc(100vh-200px)]">
               <div className="space-y-1">{renderSections(sections)}</div>
             </ScrollArea>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="mt-2 w-full justify-start gap-2"
-              onClick={addSection}
-            >
-              <Plus className="h-4 w-4" />
-              Add Section
-            </Button>
           </div>
         </aside>
 
