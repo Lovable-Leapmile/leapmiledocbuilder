@@ -1,12 +1,21 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Navigation } from "@/components/Navigation";
 import { ProjectCard } from "@/components/ProjectCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Plus, Search, FileText, Zap, Users } from "lucide-react";
+import { Plus, Search, FileText, Upload, Download } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
-import { getUserDocuments } from "@/lib/localStorage";
+import { getUserDocuments, saveDocument, generateId } from "@/lib/localStorage";
+import { exportBackup, importBackup, restoreBackup, importDocument, getAutoBackups } from "@/lib/backup";
+import { useToast } from "@/hooks/use-toast";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 const Index = () => {
   const [searchQuery, setSearchQuery] = useState("");
@@ -18,6 +27,10 @@ const Index = () => {
     author: string;
   }>>([]);
   const { user } = useAuth();
+  const { toast } = useToast();
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const importDocInputRef = useRef<HTMLInputElement>(null);
+  const [showAutoBackups, setShowAutoBackups] = useState(false);
 
   // Load projects from localStorage
   const loadProjects = () => {
@@ -42,6 +55,97 @@ const Index = () => {
   useEffect(() => {
     loadProjects();
   }, [user]);
+
+  const handleExportBackup = () => {
+    exportBackup();
+    toast({
+      title: "Backup Exported",
+      description: "All projects have been exported successfully.",
+    });
+  };
+
+  const handleImportBackup = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user) return;
+
+    try {
+      const backup = await importBackup(file);
+      restoreBackup(backup, user.id);
+      loadProjects();
+      toast({
+        title: "Backup Imported",
+        description: `Successfully restored ${backup.documents.length} documents.`,
+      });
+    } catch (error) {
+      toast({
+        title: "Import Failed",
+        description: "Failed to import backup file. Please check the file format.",
+        variant: "destructive",
+      });
+    }
+    
+    // Reset input
+    if (importInputRef.current) {
+      importInputRef.current.value = '';
+    }
+  };
+
+  const handleImportDocument = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user) return;
+
+    try {
+      const document = await importDocument(file);
+      // Generate new ID and update user ID
+      const newDocument = {
+        ...document,
+        id: generateId(),
+        userId: user.id,
+        lastModified: new Date().toISOString(),
+      };
+      saveDocument(newDocument);
+      loadProjects();
+      toast({
+        title: "Document Imported",
+        description: `Successfully imported "${document.title}".`,
+      });
+    } catch (error) {
+      toast({
+        title: "Import Failed",
+        description: "Failed to import document. Please check the file format.",
+        variant: "destructive",
+      });
+    }
+    
+    // Reset input
+    if (importDocInputRef.current) {
+      importDocInputRef.current.value = '';
+    }
+  };
+
+  const handleRestoreAutoBackup = (backupKey: string) => {
+    if (!user) return;
+    
+    const backupData = localStorage.getItem(backupKey);
+    if (!backupData) return;
+
+    try {
+      const backup = JSON.parse(backupData);
+      restoreBackup(backup, user.id);
+      loadProjects();
+      setShowAutoBackups(false);
+      toast({
+        title: "Backup Restored",
+        description: "Auto-backup has been restored successfully.",
+      });
+    } catch (error) {
+      toast({
+        title: "Restore Failed",
+        description: "Failed to restore auto-backup.",
+        variant: "destructive",
+      });
+    }
+  };
   return <div className="min-h-screen bg-background">
       <Navigation />
 
@@ -79,12 +183,63 @@ const Index = () => {
       {/* Recent Projects Section */}
       <section className="py-12">
         <div className="container px-4">
-          <div className="mb-8 flex items-center justify-between">
+          <div className="mb-8 flex items-center justify-between gap-4">
             <h2 className="text-3xl font-bold">Recent Projects</h2>
-            <div className="relative w-full max-w-sm">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input type="search" placeholder="Search projects..." className="pl-9" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+            <div className="flex items-center gap-2">
+              <input
+                ref={importInputRef}
+                type="file"
+                accept=".json"
+                onChange={handleImportBackup}
+                className="hidden"
+              />
+              <input
+                ref={importDocInputRef}
+                type="file"
+                accept=".json"
+                onChange={handleImportDocument}
+                className="hidden"
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => importDocInputRef.current?.click()}
+                className="gap-2"
+              >
+                <Upload className="h-4 w-4" />
+                Import Doc
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => importInputRef.current?.click()}
+                className="gap-2"
+              >
+                <Upload className="h-4 w-4" />
+                Import Backup
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleExportBackup}
+                className="gap-2"
+              >
+                <Download className="h-4 w-4" />
+                Export Backup
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowAutoBackups(true)}
+                className="gap-2"
+              >
+                Auto-Backups
+              </Button>
             </div>
+          </div>
+          <div className="mb-4 relative w-full max-w-sm">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input type="search" placeholder="Search projects..." className="pl-9" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
           </div>
 
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
@@ -106,6 +261,43 @@ const Index = () => {
             </div>}
         </div>
       </section>
+
+      <Dialog open={showAutoBackups} onOpenChange={setShowAutoBackups}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Auto-Backups</DialogTitle>
+            <DialogDescription>
+              System automatically creates backups every 10 minutes. Click to restore any backup.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            {getAutoBackups().map((backup) => (
+              <div
+                key={backup.key}
+                className="flex items-center justify-between p-3 border rounded-lg hover:bg-accent cursor-pointer"
+                onClick={() => handleRestoreAutoBackup(backup.key)}
+              >
+                <div>
+                  <p className="font-medium">
+                    {backup.timestamp.toLocaleString()}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    {backup.backup.documents.length} documents
+                  </p>
+                </div>
+                <Button size="sm" variant="outline">
+                  Restore
+                </Button>
+              </div>
+            ))}
+            {getAutoBackups().length === 0 && (
+              <p className="text-center text-muted-foreground py-8">
+                No auto-backups available yet
+              </p>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>;
 };
 export default Index;

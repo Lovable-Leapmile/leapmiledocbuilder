@@ -21,6 +21,7 @@ import {
 import { toast } from "sonner";
 import { useState } from "react";
 import { getDocumentById, saveDocument as saveToLocalStorage, deleteDocument, generateId, type Document } from "@/lib/localStorage";
+import { exportDocument } from "@/lib/backup";
 
 interface ProjectCardProps {
   id: string;
@@ -77,22 +78,7 @@ export const ProjectCard = ({ id, title, description, lastModified, author, onUp
         return;
       }
 
-      const exportData = {
-        title: docData.title,
-        description: docData.description,
-        content: docData.content,
-        lastModified: docData.lastModified,
-      };
-
-      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${title.replace(/\s+/g, '-')}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      exportDocument(docData);
       toast.success("Project exported successfully");
     } catch (error) {
       console.error("Error exporting project:", error);

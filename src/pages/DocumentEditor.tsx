@@ -36,6 +36,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useAuth } from "@/hooks/useAuth";
 import { getDocumentById, saveDocument as saveToLocalStorage, generateId, type Document } from "@/lib/localStorage";
+import { startAutoBackup, stopAutoBackup } from "@/lib/backup";
 
 interface Block {
   id: string;
@@ -142,6 +143,12 @@ const DocumentEditor = () => {
 
     return () => clearTimeout(autoSave);
   }, [title, sections, id, user]);
+
+  // Start auto-backup every 10 minutes
+  useEffect(() => {
+    startAutoBackup(10);
+    return () => stopAutoBackup();
+  }, []);
 
   const saveDocument = () => {
     if (!user) {
