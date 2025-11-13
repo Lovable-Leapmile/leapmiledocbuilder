@@ -13,13 +13,23 @@ const Login = () => {
   const [mobileNumber, setMobileNumber] = useState("");
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
-  const { signIn, user } = useAuth();
+  const { signIn, user, resetAuth } = useAuth();
 
   useEffect(() => {
     if (user) {
       navigate("/");
     }
   }, [user, navigate]);
+
+  // Clear any stale auth tokens that can cause infinite refresh attempts
+  useEffect(() => {
+    if (!user) {
+      const hasStale = Object.keys(localStorage).some((k) => k.startsWith("sb-") && k.includes("auth"));
+      if (hasStale) {
+        resetAuth();
+      }
+    }
+  }, [user, resetAuth]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -34,7 +44,8 @@ const Login = () => {
     const { error } = await signIn(mobileNumber, password);
     
     if (error) {
-      toast.error(error.message || "Login failed. Please check your credentials.");
+      const isTransient = (error as any)?.status === 503 || /Service Unavailable|network|fetch failed/i.test(error.message);
+      toast.error(isTransient ? "The backend is temporarily unavailable. Please try again in a moment." : (error.message || "Login failed. Please check your credentials."));
     } else {
       toast.success("Login successful!");
       navigate("/");
