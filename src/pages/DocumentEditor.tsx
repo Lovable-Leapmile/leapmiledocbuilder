@@ -630,7 +630,7 @@ const DocumentEditor = () => {
         const sizeClass = block.imageSize === "small" ? "max-w-xs" : 
                          block.imageSize === "medium" ? "max-w-md" :
                          block.imageSize === "large" ? "max-w-2xl" : "max-w-full";
-        return `<div class="my-4"><img src="${block.attachmentData}" alt="${escapeHtml(block.content)}" class="w-full ${sizeClass} h-auto rounded-lg border" style="box-shadow: 0 4px 20px -2px rgba(142, 124, 195, 0.15);"/></div>`;
+        return `<div class="my-4"><img src="${block.attachmentData}" alt="${escapeHtml(block.content)}" class="w-full ${sizeClass} h-auto rounded-lg"/></div>`;
       }
       if (block.type === "pdf" && block.attachmentData) {
         return `<div class="my-4 rounded-lg border p-3 md:p-4 bg-gray-50"><div class="flex flex-col sm:flex-row items-start sm:items-center gap-3"><svg class="h-5 w-5 sm:h-6 sm:w-6 text-blue-700 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg><div class="flex-1 min-w-0"><p class="font-medium text-sm sm:text-base break-words">${escapeHtml(block.content)}</p><p class="text-xs sm:text-sm text-gray-500">PDF Document</p></div><a href="${block.attachmentData}" download="${escapeHtml(block.content)}" class="px-3 py-1.5 text-sm border rounded-md hover:bg-gray-100 w-full sm:w-auto text-center flex-shrink-0">Download</a></div></div>`;
@@ -1280,7 +1280,7 @@ const DocumentEditor = () => {
                               <img 
                                 src={block.attachmentData} 
                                 alt={block.content}
-                                className={`rounded-lg border shadow-card ${
+                                className={`rounded-lg ${
                                   block.imageSize === "small" ? "max-w-xs" :
                                   block.imageSize === "medium" ? "max-w-md" :
                                   block.imageSize === "large" ? "max-w-2xl" :
