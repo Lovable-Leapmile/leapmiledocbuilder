@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,12 +7,16 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { LucideIcon } from "lucide-react";
-import { getDocumentById } from "@/lib/localStorage";
+import { getDocumentById, saveDocument as saveDocumentToStorage, type Document } from "@/lib/localStorage";
+import { getAssetObjectUrl, saveAssetFromDataUrl } from "@/lib/assetStorage";
 
 interface Block {
   id: string;
   type: "paragraph" | "h1" | "h2" | "h3" | "image" | "pdf" | "link" | "video";
   content: string;
+  attachmentId?: string;
+  attachmentName?: string;
+  attachmentType?: string;
   attachmentData?: string;
 }
 
@@ -39,16 +43,135 @@ const DocumentPreview = () => {
   ]);
   const [activeSection, setActiveSection] = useState("1");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const assetUrlCacheRef = useRef<Map<string, string>>(new Map());
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Array<{sectionId: string; sectionTitle: string; matchText: string}>>([]);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
-    const load = () => {
+    return () => {
+      assetUrlCacheRef.current.forEach((url) => URL.revokeObjectURL(url));
+      assetUrlCacheRef.current.clear();
+    };
+  }, []);
+
+  const sanitizeSections = useCallback((sectionList: Section[]): Section[] => {
+    const sanitize = (sectionsToSanitize: Section[]): Section[] =>
+      sectionsToSanitize.map((section) => ({
+        ...section,
+        content: section.content.map(({ attachmentData, ...blockRest }) => ({
+          ...blockRest,
+        })),
+        children: section.children ? sanitize(section.children) : undefined,
+      }));
+
+    return sanitize(sectionList);
+  }, []);
+
+  const hydrateSections = useCallback(
+    async (sectionList: Section[]): Promise<{ sections: Section[]; attachments: Attachment[]; migrated: boolean }> => {
+      let migrated = false;
+      const attachmentsMap = new Map<string, Attachment>();
+
+      const processSection = async (section: Section): Promise<Section> => {
+        const processedBlocks: Block[] = [];
+
+        for (const block of section.content) {
+          let updatedBlock: Block = { ...block };
+
+          if (block.attachmentData && !block.attachmentId) {
+            try {
+              const assetMeta = await saveAssetFromDataUrl(block.attachmentData, {
+                name: block.content || "attachment",
+              });
+              const assetObj = await getAssetObjectUrl(assetMeta.id).catch((error) => {
+                console.error("Failed to open stored asset in preview", error);
+                return null;
+              });
+              if (assetObj) {
+                assetUrlCacheRef.current.set(assetMeta.id, assetObj.url);
+                updatedBlock = {
+                  ...updatedBlock,
+                  attachmentId: assetMeta.id,
+                  attachmentName: block.attachmentName || assetMeta.name,
+                  attachmentType: block.attachmentType || assetObj.type,
+                  attachmentData: assetObj.url,
+                };
+                attachmentsMap.set(assetMeta.id, {
+                  id: assetMeta.id,
+                  name: updatedBlock.attachmentName || assetMeta.name,
+                  type: block.type === "image" ? "image" : block.type === "video" ? "video" : block.type === "pdf" ? "pdf" : "link",
+                  data: assetObj.url,
+                });
+                migrated = true;
+              }
+            } catch (error) {
+              console.error("Failed to migrate attachment", error);
+            }
+          } else if (block.attachmentId) {
+            let objectUrl = assetUrlCacheRef.current.get(block.attachmentId);
+            if (!objectUrl) {
+              const assetObj = await getAssetObjectUrl(block.attachmentId).catch((error) => {
+                console.error("Failed to load asset for preview", error);
+                return null;
+              });
+              if (assetObj) {
+                objectUrl = assetObj.url;
+                assetUrlCacheRef.current.set(block.attachmentId, objectUrl);
+                updatedBlock = {
+                  ...updatedBlock,
+                  attachmentName: block.attachmentName || assetObj.name,
+                  attachmentType: block.attachmentType || assetObj.type,
+                };
+              }
+            }
+            if (objectUrl) {
+              updatedBlock = { ...updatedBlock, attachmentData: objectUrl };
+              attachmentsMap.set(block.attachmentId, {
+                id: block.attachmentId,
+                name: updatedBlock.attachmentName || block.content,
+                type:
+                  block.type === "image"
+                    ? "image"
+                    : block.type === "video"
+                    ? "video"
+                    : block.type === "pdf"
+                    ? "pdf"
+                    : "link",
+                data: objectUrl,
+              });
+            }
+          }
+
+          processedBlocks.push(updatedBlock);
+        }
+
+        const processedChildren = section.children
+          ? await Promise.all(section.children.map(processSection))
+          : undefined;
+
+        return {
+          ...section,
+          content: processedBlocks,
+          children: processedChildren,
+        };
+      };
+
+      const processedSections = await Promise.all(sectionList.map(processSection));
+      return {
+        sections: processedSections,
+        attachments: Array.from(attachmentsMap.values()),
+        migrated,
+      };
+    },
+    [getAssetObjectUrl, saveAssetFromDataUrl]
+  );
+
+  useEffect(() => {
+    const load = async () => {
       if (!id) return;
-      
-      // Load from localStorage
+
       const doc = getDocumentById(id);
 
       if (!doc) {
@@ -58,12 +181,39 @@ const DocumentPreview = () => {
 
       setTitle(doc.title || "Untitled Document");
       const content = (doc.content as { sections?: Section[] }) || {};
-      const loadedSections = content.sections || [{ id: "1", title: "Introduction", content: [] }];
-      setSections(loadedSections);
-      if (loadedSections.length > 0) setActiveSection(loadedSections[0].id);
+      const baseSections = content.sections || [{ id: "1", title: "Introduction", content: [] }];
+
+      try {
+        const { sections: hydratedSections, attachments: hydratedAttachments, migrated } =
+          await hydrateSections(baseSections);
+
+        setSections(hydratedSections);
+        setAttachments(hydratedAttachments);
+        setActiveSection((prev) => {
+          if (hydratedSections.some((section) => section.id === prev)) {
+            return prev;
+          }
+          return hydratedSections[0]?.id || "1";
+        });
+
+        if (migrated) {
+          const sanitizedSections = sanitizeSections(hydratedSections);
+          const updatedDoc: Document = {
+            ...doc,
+            content: { sections: sanitizedSections },
+            lastModified: new Date().toISOString(),
+          };
+          saveDocumentToStorage(updatedDoc);
+        }
+      } catch (error) {
+        console.error("Failed to hydrate preview content", error);
+        setSections(baseSections);
+        setAttachments([]);
+        setActiveSection(baseSections[0]?.id || "1");
+      }
     };
     load();
-  }, [id]);
+  }, [id, hydrateSections, sanitizeSections]);
 
   // Search functionality
   useEffect(() => {
@@ -194,55 +344,82 @@ const DocumentPreview = () => {
           </h3>
         );
       }
-      if (block.type === "image" && block.attachmentData) {
-        return (
-          <div key={block.id} className="my-4">
-            <img
-              src={block.attachmentData}
-              alt={block.content}
-              className="w-full max-w-full h-auto rounded-lg border shadow-card"
-            />
-            <p className="mt-2 text-xs sm:text-sm text-muted-foreground">{block.content}</p>
-          </div>
-        );
-      }
-      if (block.type === "pdf" && block.attachmentData) {
-        return (
-          <div key={block.id} className="my-4 rounded-lg border bg-muted p-3 md:p-4">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
-              <FileText className="h-5 w-5 sm:h-6 sm:w-6 text-primary flex-shrink-0" />
-              <div className="flex-1 min-w-0">
-                <p className="font-medium text-sm sm:text-base break-words">{block.content}</p>
-                <p className="text-xs sm:text-sm text-muted-foreground">PDF Document</p>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                className="w-full sm:w-auto flex-shrink-0"
-                onClick={() => {
-                  const link = document.createElement("a");
-                  link.href = block.attachmentData!;
-                  link.download = block.content;
-                  link.click();
-                }}
-              >
-                Download
-              </Button>
+      if (block.type === "image") {
+        if (block.attachmentData) {
+          return (
+            <div key={block.id} className="my-4">
+              <img
+                src={block.attachmentData}
+                alt={block.attachmentName || block.content}
+                className="w-full max-w-full h-auto rounded-lg border shadow-card"
+              />
+              <p className="mt-2 text-xs sm:text-sm text-muted-foreground">
+                {block.attachmentName || block.content}
+              </p>
             </div>
+          );
+        }
+        return (
+          <div key={block.id} className="my-4 rounded border border-dashed p-4 text-sm text-muted-foreground">
+            Image attachment unavailable.
           </div>
         );
       }
-      if (block.type === "video" && block.attachmentData) {
+      if (block.type === "pdf") {
+        if (block.attachmentData) {
+          return (
+            <div key={block.id} className="my-4 rounded-lg border bg-muted p-3 md:p-4">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+                <FileText className="h-5 w-5 sm:h-6 sm:w-6 text-primary flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-sm sm:text-base break-words">
+                    {block.attachmentName || block.content}
+                  </p>
+                  <p className="text-xs sm:text-sm text-muted-foreground">PDF Document</p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full sm:w-auto flex-shrink-0"
+                  onClick={() => {
+                    const link = document.createElement("a");
+                    link.href = block.attachmentData!;
+                    link.download = block.attachmentName || block.content;
+                    link.click();
+                  }}
+                >
+                  Download
+                </Button>
+              </div>
+            </div>
+          );
+        }
         return (
-          <div key={block.id} className="my-4">
-            <video
-              controls
-              className="w-full max-w-full h-auto rounded-lg border shadow-card"
-              src={block.attachmentData}
-            >
-              Your browser does not support the video tag.
-            </video>
-            <p className="mt-2 text-xs sm:text-sm text-muted-foreground">{block.content}</p>
+          <div key={block.id} className="my-4 rounded border border-dashed p-4 text-sm text-muted-foreground">
+            PDF attachment unavailable.
+          </div>
+        );
+      }
+      if (block.type === "video") {
+        if (block.attachmentData) {
+          return (
+            <div key={block.id} className="my-4">
+              <video
+                controls
+                className="w-full max-w-full h-auto rounded-lg border shadow-card"
+                src={block.attachmentData}
+              >
+                Your browser does not support the video tag.
+              </video>
+              <p className="mt-2 text-xs sm:text-sm text-muted-foreground">
+                {block.attachmentName || block.content}
+              </p>
+            </div>
+          );
+        }
+        return (
+          <div key={block.id} className="my-4 rounded border border-dashed p-4 text-sm text-muted-foreground">
+            Video attachment unavailable.
           </div>
         );
       }

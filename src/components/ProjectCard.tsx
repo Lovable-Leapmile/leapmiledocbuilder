@@ -69,7 +69,7 @@ export const ProjectCard = ({ id, title, description, lastModified, author, onUp
     }
   };
 
-  const handleExport = () => {
+  const handleExport = async () => {
     try {
       const docData = getDocumentById(id);
 
@@ -78,7 +78,7 @@ export const ProjectCard = ({ id, title, description, lastModified, author, onUp
         return;
       }
 
-      exportDocument(docData);
+      await exportDocument(docData);
       toast.success("Project exported successfully");
     } catch (error) {
       console.error("Error exporting project:", error);
@@ -124,7 +124,7 @@ export const ProjectCard = ({ id, title, description, lastModified, author, onUp
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onClick={handleEdit}>Edit</DropdownMenuItem>
                 <DropdownMenuItem onClick={handleDuplicate}>Duplicate</DropdownMenuItem>
-                <DropdownMenuItem onClick={handleExport}>Export</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => void handleExport()}>Export</DropdownMenuItem>
                 <DropdownMenuItem className="text-destructive" onClick={() => setShowDeleteDialog(true)}>
                   Delete
                 </DropdownMenuItem>

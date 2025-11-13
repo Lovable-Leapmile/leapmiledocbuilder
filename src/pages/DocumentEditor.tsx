@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Navigation } from "@/components/Navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,13 +36,23 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useAuth } from "@/hooks/useAuth";
 import { getDocumentById, saveDocument as saveToLocalStorage, generateId, type Document } from "@/lib/localStorage";
+import {
+  saveAsset,
+  saveAssetFromDataUrl,
+  getAssetObjectUrl,
+  deleteAsset,
+  getAssetDataUrl,
+} from "@/lib/assetStorage";
 import { startAutoBackup, stopAutoBackup } from "@/lib/backup";
 
 interface Block {
   id: string;
   type: "paragraph" | "h1" | "h2" | "h3" | "image" | "pdf" | "link" | "video";
   content: string;
-  attachmentData?: string; // For storing file data
+  attachmentId?: string;
+  attachmentName?: string;
+  attachmentType?: string;
+  attachmentData?: string; // Object URL for display
   imageSize?: "small" | "medium" | "large" | "full"; // For image sizing
 }
 
@@ -52,13 +62,6 @@ interface Section {
   content: Block[];
   children?: Section[];
   parentId?: string;
-}
-
-interface Attachment {
-  id: string;
-  name: string;
-  type: "image" | "pdf" | "link" | "video";
-  data: string; // base64 for images/pdfs/videos, url for links
 }
 
 const DocumentEditor = () => {
@@ -71,7 +74,6 @@ const DocumentEditor = () => {
     { id: "1", title: "Introduction", content: [] },
   ]);
   const [activeSection, setActiveSection] = useState("1");
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showBlockTypeMenu, setShowBlockTypeMenu] = useState(false);
   const [currentBlockId, setCurrentBlockId] = useState<string | null>(null);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
@@ -80,25 +82,162 @@ const DocumentEditor = () => {
   const [insertAfterBlockId, setInsertAfterBlockId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [deleteSectionId, setDeleteSectionId] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
   const loadedDocIdRef = useRef<string | null>(null);
   const [imageSizeDialogOpen, setImageSizeDialogOpen] = useState(false);
-  const [pendingImageData, setPendingImageData] = useState<{file: File, data: string} | null>(null);
+  const [pendingImageData, setPendingImageData] = useState<{ file: File; previewUrl: string } | null>(null);
+  const assetUrlCacheRef = useRef<Map<string, string>>(new Map());
+  const pendingImageRef = useRef<{ previewUrl: string } | null>(null);
   const [editingImageBlockId, setEditingImageBlockId] = useState<string | null>(null);
 
-  // Load document from localStorage
   useEffect(() => {
-    const loadDocument = () => {
-      if (!user || !id || isLoading) return;
-      
-      // Prevent loading the same document multiple times
+    return () => {
+      assetUrlCacheRef.current.forEach((url) => URL.revokeObjectURL(url));
+      assetUrlCacheRef.current.clear();
+      if (pendingImageRef.current) {
+        URL.revokeObjectURL(pendingImageRef.current.previewUrl);
+        pendingImageRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    pendingImageRef.current = pendingImageData;
+  }, [pendingImageData]);
+
+  useEffect(() => {
+    if (!imageSizeDialogOpen && pendingImageData) {
+      URL.revokeObjectURL(pendingImageData.previewUrl);
+      setPendingImageData(null);
+      setPendingAttachmentType(null);
+      setInsertAfterBlockId(null);
+    }
+  }, [imageSizeDialogOpen, pendingImageData]);
+
+  const sanitizeSections = useCallback((sectionList: Section[]): Section[] => {
+    const sanitize = (sectionsToSanitize: Section[]): Section[] =>
+      sectionsToSanitize.map((section) => ({
+        ...section,
+        content: section.content.map(({ attachmentData, ...blockRest }) => ({
+          ...blockRest,
+        })),
+        children: section.children ? sanitize(section.children) : undefined,
+      }));
+
+    return sanitize(sectionList);
+  }, []);
+
+  const saveDocumentCore = useCallback(
+    (override?: { sections?: Section[]; title?: string }) => {
+      if (!user || !id || id === "new") return;
+
+      const sectionsToPersist = override?.sections ?? sections;
+      const titleToPersist = override?.title ?? title;
+
+      const sanitizedSections = sanitizeSections(sectionsToPersist);
+      const description =
+        sanitizedSections[0]?.content[0]?.content?.substring(0, 100) || "";
+
+      const doc: Document = {
+        id,
+        userId: user.id,
+        title: titleToPersist,
+        description,
+        content: { sections: sanitizedSections },
+        lastModified: new Date().toISOString(),
+        createdAt: getDocumentById(id)?.createdAt || new Date().toISOString(),
+      };
+
+      saveToLocalStorage(doc);
+    },
+    [user, id, sections, title, sanitizeSections]
+  );
+
+  const hydrateSections = useCallback(
+    async (sectionList: Section[]): Promise<{ sections: Section[]; migrated: boolean }> => {
+      let migrated = false;
+
+      const processSection = async (section: Section): Promise<Section> => {
+        const processedBlocks: Block[] = [];
+
+        for (const block of section.content) {
+          let updatedBlock: Block = { ...block };
+
+          if (block.attachmentData && !block.attachmentId) {
+            try {
+              const assetMeta = await saveAssetFromDataUrl(block.attachmentData, {
+                name: block.content || "attachment",
+              });
+              const assetObj = await getAssetObjectUrl(assetMeta.id).catch((error) => {
+                console.error("Failed to open stored asset", error);
+                return null;
+              });
+              if (assetObj) {
+                assetUrlCacheRef.current.set(assetMeta.id, assetObj.url);
+                updatedBlock = {
+                  ...updatedBlock,
+                  attachmentId: assetMeta.id,
+                  attachmentName: block.attachmentName || assetMeta.name,
+                  attachmentType: block.attachmentType || assetObj.type,
+                  attachmentData: assetObj.url,
+                };
+                migrated = true;
+              }
+            } catch (error) {
+              console.error("Failed to migrate attachment data", error);
+            }
+          } else if (block.attachmentId) {
+            const cachedUrl = assetUrlCacheRef.current.get(block.attachmentId);
+            if (cachedUrl) {
+              updatedBlock = {
+                ...updatedBlock,
+                attachmentData: cachedUrl,
+              };
+            } else {
+              const assetObj = await getAssetObjectUrl(block.attachmentId).catch((error) => {
+                console.error("Failed to load asset", error);
+                return null;
+              });
+              if (assetObj) {
+                assetUrlCacheRef.current.set(block.attachmentId, assetObj.url);
+                updatedBlock = {
+                  ...updatedBlock,
+                  attachmentData: assetObj.url,
+                  attachmentName: block.attachmentName || assetObj.name,
+                  attachmentType: block.attachmentType || assetObj.type,
+                };
+              }
+            }
+          }
+
+          processedBlocks.push(updatedBlock);
+        }
+
+        const processedChildren = section.children
+          ? await Promise.all(section.children.map(processSection))
+          : undefined;
+
+        return {
+          ...section,
+          content: processedBlocks,
+          children: processedChildren,
+        };
+      };
+
+      const processedSections = await Promise.all(sectionList.map(processSection));
+      return { sections: processedSections, migrated };
+    },
+    [getAssetObjectUrl, saveAssetFromDataUrl]
+  );
+
+  // Load document from storage and hydrate assets
+  useEffect(() => {
+    const loadDocument = async () => {
+      if (!user || !id) return;
       if (loadedDocIdRef.current === id) return;
 
-      setIsLoading(true);
       loadedDocIdRef.current = id;
 
       if (id === "new") {
-        // Create new document
         const newId = generateId();
         const newDoc: Document = {
           id: newId,
@@ -109,29 +248,52 @@ const DocumentEditor = () => {
           lastModified: new Date().toISOString(),
           createdAt: new Date().toISOString(),
         };
-        
+
         saveToLocalStorage(newDoc);
         navigate(`/editor/${newId}`, { replace: true });
-      } else {
-        // Load existing document
-        const doc = getDocumentById(id);
-        
-        if (!doc) {
-          console.error("Document not found");
-          setIsLoading(false);
-          return;
-        }
-
-        setTitle(doc.title);
-        const content = doc.content as { sections?: Section[] };
-        setSections(content.sections || [{ id: "1", title: "Introduction", content: [] }]);
+        return;
       }
-      
-      setIsLoading(false);
+
+      const doc = getDocumentById(id);
+
+      if (!doc) {
+        console.error("Document not found");
+        return;
+      }
+
+      const docTitle = doc.title || "Untitled Document";
+      setTitle(docTitle);
+      const content = doc.content as { sections?: Section[] };
+      const baseSections = content.sections || [{ id: "1", title: "Introduction", content: [] }];
+
+      try {
+        const { sections: hydratedSections, migrated } = await hydrateSections(baseSections);
+
+        setSections(hydratedSections);
+        setActiveSection((prev) => {
+          if (hydratedSections.some((section) => section.id === prev)) {
+            return prev;
+          }
+          return hydratedSections[0]?.id || "1";
+        });
+
+        if (migrated) {
+          saveDocumentCore({ sections: hydratedSections, title: docTitle });
+        }
+      } catch (error) {
+        console.error("Failed to hydrate sections", error);
+        setSections(baseSections);
+        setActiveSection(baseSections[0]?.id || "1");
+        toast({
+          title: "Asset storage unavailable",
+          description: "Attachments could not be loaded. You can still edit text content.",
+          variant: "destructive",
+        });
+      }
     };
 
     loadDocument();
-  }, [id, user]);
+  }, [id, user, hydrateSections, navigate, saveDocumentCore]);
 
   // Auto-save document to localStorage
   useEffect(() => {
@@ -142,7 +304,7 @@ const DocumentEditor = () => {
     }, 1200);
 
     return () => clearTimeout(autoSave);
-  }, [title, sections, id, user]);
+  }, [title, sections, id, user, saveDocumentCore]);
 
   // Start auto-backup every 10 minutes
   useEffect(() => {
@@ -248,6 +410,31 @@ const DocumentEditor = () => {
       }));
     };
 
+    const collectAttachmentIds = (section: Section, acc: string[] = []): string[] => {
+      section.content.forEach((block) => {
+        if (block.attachmentId) {
+          acc.push(block.attachmentId);
+        }
+      });
+      section.children?.forEach((child) => collectAttachmentIds(child, acc));
+      return acc;
+    };
+
+    const sectionToDelete = findSection(sectionId);
+    if (sectionToDelete) {
+      const attachmentIds = collectAttachmentIds(sectionToDelete);
+      attachmentIds.forEach((assetId) => {
+        deleteAsset(assetId).catch((error) => {
+          console.error("Failed to remove asset", error);
+        });
+        const cachedUrl = assetUrlCacheRef.current.get(assetId);
+        if (cachedUrl) {
+          URL.revokeObjectURL(cachedUrl);
+          assetUrlCacheRef.current.delete(assetId);
+        }
+      });
+    }
+
     setSections(removeSection(sections));
     if (activeSection === sectionId) {
       setActiveSection(sections[0].id);
@@ -287,9 +474,9 @@ const DocumentEditor = () => {
   const addBlock = (sectionId: string, type: Block["type"], afterBlockId?: string) => {
     if (type === "image" || type === "pdf" || type === "video") {
       setPendingAttachmentType(type);
+      setInsertAfterBlockId(afterBlockId ?? null);
       fileInputRef.current?.click();
       setShowBlockTypeMenu(false);
-      setInsertAfterBlockId(null);
       return;
     }
 
@@ -353,66 +540,155 @@ const DocumentEditor = () => {
   const deleteBlock = (sectionId: string, blockId: string) => {
     const section = findSection(sectionId);
     if (section) {
+      const blockToDelete = section.content.find((block) => block.id === blockId);
+      if (blockToDelete?.attachmentId) {
+        deleteAsset(blockToDelete.attachmentId).catch((error) => {
+          console.error("Failed to remove asset", error);
+        });
+        const cachedUrl = assetUrlCacheRef.current.get(blockToDelete.attachmentId);
+        if (cachedUrl) {
+          URL.revokeObjectURL(cachedUrl);
+          assetUrlCacheRef.current.delete(blockToDelete.attachmentId);
+        }
+      }
       const updatedContent = section.content.filter((block) => block.id !== blockId);
       updateSection(sectionId, "content", updatedContent);
     }
     setDeleteConfirmId(null);
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || !pendingAttachmentType || !currentSection) return;
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (pendingAttachmentType === "image") {
-        // For images, show size picker dialog
-        setPendingImageData({ file, data: reader.result as string });
-        setImageSizeDialogOpen(true);
-      } else {
-        // For PDFs and videos, add directly
-        const newBlock: Block = {
-          id: Date.now().toString(),
-          type: pendingAttachmentType,
-          content: file.name,
-          attachmentData: reader.result as string,
-        };
+    if (!file || !pendingAttachmentType || !currentSection) {
+      if (e.target.value) e.target.value = "";
+      return;
+    }
 
-        updateSection(currentSection.id, "content", [...currentSection.content, newBlock]);
-        
-        toast({
-          title: `${pendingAttachmentType.charAt(0).toUpperCase() + pendingAttachmentType.slice(1)} added`,
-          description: `${file.name} has been added to the document.`,
-        });
-        
-        setPendingAttachmentType(null);
+    if (pendingAttachmentType === "image") {
+      const previewUrl = URL.createObjectURL(file);
+      setPendingImageData({ file, previewUrl });
+      setImageSizeDialogOpen(true);
+      setPendingAttachmentType(null);
+      if (e.target.value) e.target.value = "";
+      return;
+    }
+
+    try {
+      const typeHint =
+        file.type || (pendingAttachmentType === "pdf" ? "application/pdf" : "video/mp4");
+      const assetMeta = await saveAsset(file, {
+        name: file.name,
+        type: typeHint,
+      });
+
+      const objectUrl = URL.createObjectURL(file);
+      assetUrlCacheRef.current.set(assetMeta.id, objectUrl);
+
+      const newBlock: Block = {
+        id: Date.now().toString(),
+        type: pendingAttachmentType,
+        content: file.name,
+        attachmentId: assetMeta.id,
+        attachmentName: file.name,
+        attachmentType: assetMeta.type,
+        attachmentData: objectUrl,
+      };
+
+      const section = findSection(currentSection.id);
+      if (section) {
+        const updatedContent = [...section.content];
+        if (insertAfterBlockId) {
+          const blockIndex = section.content.findIndex((b) => b.id === insertAfterBlockId);
+          if (blockIndex >= 0) {
+            updatedContent.splice(blockIndex + 1, 0, newBlock);
+          } else {
+            updatedContent.push(newBlock);
+          }
+        } else {
+          updatedContent.push(newBlock);
+        }
+        updateSection(currentSection.id, "content", updatedContent);
+        setCurrentBlockId(newBlock.id);
       }
-    };
-    reader.readAsDataURL(file);
-    e.target.value = "";
+
+      toast({
+        title: `${pendingAttachmentType.charAt(0).toUpperCase() + pendingAttachmentType.slice(1)} added`,
+        description: `${file.name} has been added to the document.`,
+      });
+    } catch (error) {
+      console.error("Failed to store attachment", error);
+      toast({
+        title: "Upload failed",
+        description: "We couldn't store this file locally. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setPendingAttachmentType(null);
+      setInsertAfterBlockId(null);
+      if (e.target.value) e.target.value = "";
+    }
   };
 
-  const addImageWithSize = (size: "small" | "medium" | "large" | "full") => {
+  const addImageWithSize = async (size: "small" | "medium" | "large" | "full") => {
     if (!pendingImageData || !currentSection) return;
 
-    const newBlock: Block = {
-      id: Date.now().toString(),
-      type: "image",
-      content: pendingImageData.file.name,
-      attachmentData: pendingImageData.data,
-      imageSize: size,
-    };
+    const { file, previewUrl } = pendingImageData;
 
-    updateSection(currentSection.id, "content", [...currentSection.content, newBlock]);
-    
-    toast({
-      title: "Image added",
-      description: `${pendingImageData.file.name} has been added to the document.`,
-    });
-    
-    setPendingImageData(null);
-    setPendingAttachmentType(null);
-    setImageSizeDialogOpen(false);
+    try {
+      const assetMeta = await saveAsset(file, {
+        name: file.name,
+        type: file.type || "image/*",
+      });
+
+      assetUrlCacheRef.current.set(assetMeta.id, previewUrl);
+
+      const newBlock: Block = {
+        id: Date.now().toString(),
+        type: "image",
+        content: file.name,
+        attachmentId: assetMeta.id,
+        attachmentName: file.name,
+        attachmentType: assetMeta.type,
+        attachmentData: previewUrl,
+        imageSize: size,
+      };
+
+      const section = findSection(currentSection.id);
+      if (section) {
+        const updatedContent = [...section.content];
+        if (insertAfterBlockId) {
+          const blockIndex = section.content.findIndex((b) => b.id === insertAfterBlockId);
+          if (blockIndex >= 0) {
+            updatedContent.splice(blockIndex + 1, 0, newBlock);
+          } else {
+            updatedContent.push(newBlock);
+          }
+        } else {
+          updatedContent.push(newBlock);
+        }
+        updateSection(currentSection.id, "content", updatedContent);
+        setCurrentBlockId(newBlock.id);
+      }
+
+      toast({
+        title: "Image added",
+        description: `${file.name} has been added to the document.`,
+      });
+    } catch (error) {
+      console.error("Failed to store image asset", error);
+      URL.revokeObjectURL(previewUrl);
+      toast({
+        title: "Image upload failed",
+        description: "We couldn't store this image. Please try another file.",
+        variant: "destructive",
+      });
+    } finally {
+      setPendingImageData(null);
+      setPendingAttachmentType(null);
+      setImageSizeDialogOpen(false);
+      setInsertAfterBlockId(null);
+    }
   };
 
   const updateImageSize = (blockId: string, size: "small" | "medium" | "large" | "full") => {
@@ -430,43 +706,7 @@ const DocumentEditor = () => {
     });
   };
 
-  // Performance & resilience helpers for saving
   const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
-  const performWithRetry = async (fn: () => Promise<void>, retries = 3, baseDelay = 400) => {
-    let attempt = 0;
-    let lastErr: any;
-    while (attempt <= retries) {
-      try {
-        await fn();
-        return;
-      } catch (err) {
-        lastErr = err;
-        // Exponential backoff: 400ms, 800ms, 1600ms, 3200ms
-        await delay(baseDelay * Math.pow(2, attempt));
-        attempt++;
-      }
-    }
-    throw lastErr;
-  };
-
-  // Core update call used by both auto-save and explicit Save
-  const saveDocumentCore = () => {
-    if (!user || !id || id === "new") return;
-    const description = sections[0]?.content[0]?.content?.substring(0, 100) || "";
-
-    const doc: Document = {
-      id,
-      userId: user.id,
-      title,
-      description,
-      content: { sections },
-      lastModified: new Date().toISOString(),
-      createdAt: getDocumentById(id)?.createdAt || new Date().toISOString(),
-    };
-
-    saveToLocalStorage(doc);
-  };
-
 
   const currentSection = findSection(activeSection);
 
@@ -597,6 +837,26 @@ const DocumentEditor = () => {
 
     const allSections = flattenSections(sections);
 
+    const attachmentIdSet = new Set<string>();
+    allSections.forEach((section) => {
+      section.content.forEach((block) => {
+        if (block.attachmentId) {
+          attachmentIdSet.add(block.attachmentId);
+        }
+      });
+    });
+
+    const assetDataMap = new Map<
+      string,
+      { dataUrl: string; name: string; type: string; size: number; createdAt: number; updatedAt: number }
+    >();
+    for (const assetId of attachmentIdSet) {
+      const assetData = await getAssetDataUrl(assetId);
+      if (assetData) {
+        assetDataMap.set(assetId, assetData);
+      }
+    }
+
     // Escape HTML to prevent XSS
     const escapeHtml = (text: string): string => {
       const map: { [key: string]: string } = {
@@ -619,17 +879,38 @@ const DocumentEditor = () => {
       if (block.type === "h3") {
         return `<h3 class="text-lg sm:text-xl md:text-2xl font-bold mb-2">${escapeHtml(block.content)}</h3>`;
       }
-      if (block.type === "image" && block.attachmentData) {
+      if (block.type === "image") {
+        const assetData = block.attachmentId ? assetDataMap.get(block.attachmentId) : undefined;
+        const src = assetData?.dataUrl || block.attachmentData;
+        if (!src) {
+          console.warn(`Missing image data for block ${block.id}`);
+          return "";
+        }
         const sizeClass = block.imageSize === "small" ? "max-w-xs" : 
                          block.imageSize === "medium" ? "max-w-md" :
                          block.imageSize === "large" ? "max-w-2xl" : "max-w-full";
-        return `<div class="my-4"><img src="${block.attachmentData}" alt="${escapeHtml(block.content)}" class="w-full ${sizeClass} h-auto rounded-lg"/></div>`;
+        const altText = block.attachmentName || block.content;
+        return `<div class="my-4"><img src="${src}" alt="${escapeHtml(altText)}" class="w-full ${sizeClass} h-auto rounded-lg"/></div>`;
       }
-      if (block.type === "pdf" && block.attachmentData) {
-        return `<div class="my-4 rounded-lg border p-3 md:p-4 bg-gray-50"><div class="flex flex-col sm:flex-row items-start sm:items-center gap-3"><svg class="h-5 w-5 sm:h-6 sm:w-6 text-blue-700 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg><div class="flex-1 min-w-0"><p class="font-medium text-sm sm:text-base break-words">${escapeHtml(block.content)}</p><p class="text-xs sm:text-sm text-gray-500">PDF Document</p></div><a href="${block.attachmentData}" download="${escapeHtml(block.content)}" class="px-3 py-1.5 text-sm border rounded-md hover:bg-gray-100 w-full sm:w-auto text-center flex-shrink-0">Download</a></div></div>`;
+      if (block.type === "pdf") {
+        const assetData = block.attachmentId ? assetDataMap.get(block.attachmentId) : undefined;
+        const href = assetData?.dataUrl || block.attachmentData;
+        if (!href) {
+          console.warn(`Missing PDF data for block ${block.id}`);
+          return "";
+        }
+        const fileName = block.attachmentName || block.content;
+        return `<div class="my-4 rounded-lg border p-3 md:p-4 bg-gray-50"><div class="flex flex-col sm:flex-row items-start sm:items-center gap-3"><svg class="h-5 w-5 sm:h-6 sm:w-6 text-blue-700 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg><div class="flex-1 min-w-0"><p class="font-medium text-sm sm:text-base break-words">${escapeHtml(fileName)}</p><p class="text-xs sm:text-sm text-gray-500">PDF Document</p></div><a href="${href}" download="${escapeHtml(fileName)}" class="px-3 py-1.5 text-sm border rounded-md hover:bg-gray-100 w-full sm:w-auto text-center flex-shrink-0">Download</a></div></div>`;
       }
-      if (block.type === "video" && block.attachmentData) {
-        return `<div class="my-4"><video controls class="w-full max-w-full h-auto rounded-lg border" src="${block.attachmentData}" style="box-shadow: 0 4px 20px -2px rgba(37, 99, 235, 0.08);">Your browser does not support the video tag.</video><p class="mt-2 text-xs sm:text-sm text-gray-500">${escapeHtml(block.content)}</p></div>`;
+      if (block.type === "video") {
+        const assetData = block.attachmentId ? assetDataMap.get(block.attachmentId) : undefined;
+        const src = assetData?.dataUrl || block.attachmentData;
+        if (!src) {
+          console.warn(`Missing video data for block ${block.id}`);
+          return "";
+        }
+        const caption = block.attachmentName || block.content;
+        return `<div class="my-4"><video controls class="w-full max-w-full h-auto rounded-lg border" src="${src}" style="box-shadow: 0 4px 20px -2px rgba(37, 99, 235, 0.08);">Your browser does not support the video tag.</video><p class="mt-2 text-xs sm:text-sm text-gray-500">${escapeHtml(caption)}</p></div>`;
       }
       if (block.type === "link") {
         return `<div class="my-4 rounded-lg border p-3 md:p-4 bg-gray-50"><div class="flex items-start sm:items-center gap-3"><svg class="h-5 w-5 sm:h-6 sm:w-6 text-blue-700 flex-shrink-0 mt-0.5 sm:mt-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path></svg><a href="${escapeHtml(block.content)}" target="_blank" rel="noopener noreferrer" class="flex-1 text-blue-700 hover:underline break-all text-sm sm:text-base">${escapeHtml(block.content)}</a></div></div>`;

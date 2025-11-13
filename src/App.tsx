@@ -13,7 +13,10 @@ import { useAuth } from "./hooks/useAuth";
 // Get base path from Vite's BASE_URL (automatically set from vite.config.ts base option)
 // This works with both VITE_APP_BASE env var and --base CLI flag
 // BASE_URL already includes trailing slash, but BrowserRouter expects it without trailing slash for root
-const BASE_PATH = import.meta.env.BASE_URL === "/" ? "/" : import.meta.env.BASE_URL.slice(0, -1);
+const rawBaseUrl = import.meta.env.BASE_URL ?? "/";
+const normalizedBase =
+  rawBaseUrl === "/" || rawBaseUrl === "./" ? "/" : rawBaseUrl.replace(/\/+$/, "");
+const routerBase = normalizedBase === "/" ? undefined : normalizedBase;
 
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { user, loading } = useAuth();
@@ -51,7 +54,7 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <Sonner />
-      <BrowserRouter basename={BASE_PATH}>
+      <BrowserRouter basename={routerBase}>
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<RootRoute />} />

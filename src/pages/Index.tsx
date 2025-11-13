@@ -128,7 +128,7 @@ const Index = () => {
               <input
                 ref={importDocInputRef}
                 type="file"
-                accept=".json"
+                accept=".json,.zip"
                 onChange={handleImportDocument}
                 className="hidden"
               />
