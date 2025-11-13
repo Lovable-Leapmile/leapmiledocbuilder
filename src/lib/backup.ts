@@ -39,7 +39,9 @@ export const importBackup = (file: File): Promise<BackupData> => {
     reader.onload = (e) => {
       try {
         const data = JSON.parse(e.target?.result as string) as BackupData;
-        if (!data.version || !data.documents) {
+        const hasVersion = typeof (data as any).version === 'string';
+        const hasDocumentsArray = Array.isArray((data as any).documents);
+        if (!hasVersion || !hasDocumentsArray) {
           throw new Error('Invalid backup file format');
         }
         resolve(data);
@@ -130,7 +132,11 @@ export const importDocument = (file: File): Promise<Document> => {
     reader.onload = (e) => {
       try {
         const data = JSON.parse(e.target?.result as string) as Document;
-        if (!data.id || !data.title || !data.content) {
+        // Validate by presence of keys and basic types, not truthiness
+        const hasId = typeof (data as any).id === 'string';
+        const hasTitle = typeof (data as any).title === 'string';
+        const hasContentKey = Object.prototype.hasOwnProperty.call(data as any, 'content');
+        if (!hasId || !hasTitle || !hasContentKey) {
           throw new Error('Invalid document file format');
         }
         resolve(data);
