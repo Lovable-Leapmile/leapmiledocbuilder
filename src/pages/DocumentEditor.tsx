@@ -480,15 +480,43 @@ const DocumentEditor = () => {
   const currentSection = findSection(activeSection);
 
   const toggleSection = (sectionId: string) => {
-    setExpandedSections((prev) => {
-      const newSet = new Set(prev);
-      if (newSet.has(sectionId)) {
-        newSet.delete(sectionId);
-      } else {
-        newSet.add(sectionId);
-      }
-      return newSet;
-    });
+    const section = findSection(sectionId);
+    if (!section) return;
+
+    // If it's a top-level section (no parentId), auto-collapse other top-level sections
+    if (!section.parentId) {
+      setExpandedSections((prev) => {
+        const newSet = new Set(prev);
+        const wasExpanded = newSet.has(sectionId);
+        
+        // Close all other top-level sections
+        sections.forEach((s) => {
+          if (s.id !== sectionId) {
+            newSet.delete(s.id);
+          }
+        });
+        
+        // Toggle current section
+        if (wasExpanded) {
+          newSet.delete(sectionId);
+        } else {
+          newSet.add(sectionId);
+        }
+        
+        return newSet;
+      });
+    } else {
+      // For sub-sections, just toggle normally
+      setExpandedSections((prev) => {
+        const newSet = new Set(prev);
+        if (newSet.has(sectionId)) {
+          newSet.delete(sectionId);
+        } else {
+          newSet.add(sectionId);
+        }
+        return newSet;
+      });
+    }
   };
 
   const renderSections = (sectionList: Section[], depth = 0) => {
@@ -499,7 +527,7 @@ const DocumentEditor = () => {
       return (
         <div key={section.id}>
           <div
-            className="group flex w-full items-center gap-1 rounded-md px-2 py-1.5 text-sm hover:bg-muted"
+            className={`group flex w-full items-center gap-1 rounded-md px-2 py-1.5 text-sm hover:bg-muted ${depth > 0 ? 'border-l-2 border-primary/30 ml-2' : ''}`}
             style={{ paddingLeft: `${depth * 12 + 8}px` }}
           >
             {hasChildren && (
@@ -721,17 +749,19 @@ const DocumentEditor = () => {
         const isFirst = depth === 0 && sectionList.indexOf(section) === 0;
         const isExpanded = sectionsToExpand.has(section.id);
         const showIcon = depth === 0; // Only show icon for top-level sections
+        const leftBorderClass = depth > 0 ? 'border-l-2' : '';
+        const leftBorderStyle = depth > 0 ? 'border-color: hsl(258 63% 29% / 0.3);' : '';
         
         return `
           <div>
-            <div class="flex items-start w-full" style="padding-left: ${depth * 12 + 12}px;">
+            <div class="flex items-start w-full ${leftBorderClass}" style="padding-left: ${depth * 12 + 12}px; ${leftBorderStyle}">
               <button onclick="showSection('${section.id}'); closeMobileMenu(); return false;" data-section="${section.id}"
                 class="sidebar-btn${isFirst ? ' active' : ''} flex-1 flex items-start gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-gray-100 ${isFirst ? 'bg-gray-100 font-semibold text-blue-800' : 'text-gray-600'}" style="text-align: left;">
                 ${showIcon ? getIconForSection(section.title) : ''}
                 <span class="flex-1 text-left break-words">${escapeHtml(section.title)}</span>
               </button>
               ${hasChildren ? `
-                <button onclick="toggleSubSection('${section.id}'); event.stopPropagation(); return false;" class="p-2 hover:bg-gray-200 rounded flex-shrink-0 transition-colors" style="margin-top: 0.125rem;">
+                <button onclick="toggleSubSection('${section.id}', ${depth === 0}); event.stopPropagation(); return false;" class="p-2 hover:bg-gray-200 rounded flex-shrink-0 transition-colors" style="margin-top: 0.125rem;">
                   <svg id="chevron-${section.id}" class="h-4 w-4 transition-transform" style="transform: ${isExpanded ? 'rotate(90deg)' : 'rotate(0deg)'};" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
                   </svg>
@@ -988,7 +1018,7 @@ const DocumentEditor = () => {
       }
     }
 
-    function toggleSubSection(sectionId) {
+    function toggleSubSection(sectionId, isTopLevel) {
       const subsectionsEls = document.querySelectorAll('#subsections-' + sectionId);
       const chevronEls = document.querySelectorAll('#chevron-' + sectionId);
 
@@ -996,13 +1026,30 @@ const DocumentEditor = () => {
         // Determine target state based on current visibility of all matching elements
         const shouldExpand = Array.from(subsectionsEls).every(el => el.classList.contains('hidden'));
 
+        // If it's a top-level section, auto-collapse other top-level sections
+        if (isTopLevel && shouldExpand) {
+          // Find all top-level section IDs
+          const topLevelSectionIds = sectionTree.map(s => s.id);
+          
+          // Close all other top-level sections
+          topLevelSectionIds.forEach(topId => {
+            if (topId !== sectionId) {
+              const otherSubsectionsEls = document.querySelectorAll('#subsections-' + topId);
+              const otherChevronEls = document.querySelectorAll('#chevron-' + topId);
+              otherSubsectionsEls.forEach(el => el.classList.add('hidden'));
+              otherChevronEls.forEach(el => { el.style.transform = 'rotate(0deg)'; });
+              expandedSections.delete(topId);
+            }
+          });
+        }
+
         if (shouldExpand) {
-          // Expand all
+          // Expand current section
           subsectionsEls.forEach(el => el.classList.remove('hidden'));
           chevronEls.forEach(el => { el.style.transform = 'rotate(90deg)'; });
           expandedSections.add(sectionId);
         } else {
-          // Collapse all
+          // Collapse current section
           subsectionsEls.forEach(el => el.classList.add('hidden'));
           chevronEls.forEach(el => { el.style.transform = 'rotate(0deg)'; });
           expandedSections.delete(sectionId);
