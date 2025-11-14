@@ -47,6 +47,8 @@ import {
 } from "@/lib/assetStorage";
 import { startAutoBackup, stopAutoBackup } from "@/lib/backup";
 import { TextFormattingToolbar } from "@/components/TextFormattingToolbar";
+import JSZip from "jszip";
+import { getAsset } from "@/lib/assetStorage";
 
 interface TableCell {
   content: string;
@@ -669,6 +671,58 @@ const DocumentEditor = () => {
     }
   };
 
+  // Sanitize HTML to only allow safe formatting tags
+  const sanitizeHTML = (html: string): string => {
+    if (!html) return '';
+    
+    const div = document.createElement('div');
+    div.innerHTML = html;
+    
+    // Only allow these tags
+    const allowedTags = ['b', 'strong', 'i', 'em', 'u', 'br', 'p', 'span'];
+    
+    const sanitizeNode = (node: Node): Node | null => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        return node.cloneNode(true);
+      }
+      
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const element = node as HTMLElement;
+        const tagName = element.tagName.toLowerCase();
+        
+        if (!allowedTags.includes(tagName)) {
+          // Replace disallowed tags with their text content
+          return document.createTextNode(element.textContent || '');
+        }
+        
+        // Create a new element with the same tag
+        const newElement = document.createElement(tagName);
+        
+        // Copy allowed children
+        Array.from(element.childNodes).forEach(child => {
+          const sanitized = sanitizeNode(child);
+          if (sanitized) {
+            newElement.appendChild(sanitized);
+          }
+        });
+        
+        return newElement;
+      }
+      
+      return null;
+    };
+    
+    const sanitizedDiv = document.createElement('div');
+    Array.from(div.childNodes).forEach(child => {
+      const sanitized = sanitizeNode(child);
+      if (sanitized) {
+        sanitizedDiv.appendChild(sanitized);
+      }
+    });
+    
+    return sanitizedDiv.innerHTML;
+  };
+
   const applyTextFormatting = (format: "bold" | "italic" | "underline") => {
     document.execCommand(format);
     setTextSelection(null);
@@ -983,16 +1037,60 @@ const DocumentEditor = () => {
       });
     });
 
-    const assetDataMap = new Map<
+    // Helper to convert data URL to blob
+    const dataUrlToBlob = (dataUrl: string): Blob => {
+      const [meta, data] = dataUrl.split(",");
+      const mimeMatch = /data:(.*?)(;base64)?$/i.exec(meta);
+      const mime = mimeMatch?.[1] || "application/octet-stream";
+      const binary = atob(data);
+      const len = binary.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return new Blob([bytes], { type: mime });
+    };
+
+    // Get assets as blobs for zip export
+    const assetBlobMap = new Map<
       string,
-      { dataUrl: string; name: string; type: string; size: number; createdAt: number; updatedAt: number }
+      { blob: Blob; name: string; type: string }
     >();
+    
+    // Process assets with attachmentId
     for (const assetId of attachmentIdSet) {
-      const assetData = await getAssetDataUrl(assetId);
-      if (assetData) {
-        assetDataMap.set(assetId, assetData);
+      const asset = await getAsset(assetId);
+      if (asset) {
+        assetBlobMap.set(assetId, {
+          blob: asset.blob,
+          name: asset.name,
+          type: asset.type,
+        });
       }
     }
+    
+    // Process assets with only data URLs (no attachmentId)
+    allSections.forEach((section) => {
+      section.content.forEach((block) => {
+        if ((block.type === "image" || block.type === "pdf" || block.type === "video") && 
+            block.attachmentData && !block.attachmentId) {
+          // Generate a temporary ID for this asset
+          const tempId = `temp-${block.id}`;
+          try {
+            const blob = dataUrlToBlob(block.attachmentData);
+            assetBlobMap.set(tempId, {
+              blob,
+              name: block.attachmentName || block.content || `asset-${tempId}`,
+              type: block.attachmentType || blob.type,
+            });
+            // Store the mapping so we can use it in renderBlockHTML
+            attachmentIdSet.add(tempId);
+          } catch (error) {
+            console.warn(`Failed to convert data URL to blob for block ${block.id}`, error);
+          }
+        }
+      });
+    });
 
     // Escape HTML to prevent XSS
     const escapeHtml = (text: string): string => {
@@ -1017,43 +1115,80 @@ const DocumentEditor = () => {
         return `<h3 class="text-lg sm:text-xl md:text-2xl font-bold mb-2">${escapeHtml(block.content)}</h3>`;
       }
       if (block.type === "image") {
-        const assetData = block.attachmentId ? assetDataMap.get(block.attachmentId) : undefined;
-        const src = assetData?.dataUrl || block.attachmentData;
-        if (!src) {
+        const assetId = block.attachmentId || `temp-${block.id}`;
+        const assetData = assetBlobMap.get(assetId);
+        if (!assetData) {
           console.warn(`Missing image data for block ${block.id}`);
           return "";
         }
+        const fileName = assetData.name || block.attachmentName || block.content || `image-${assetId}`;
+        const fileExtension = fileName.split('.').pop() || 'png';
+        const assetPath = `assets/${assetId}.${fileExtension}`;
         const sizeClass = block.imageSize === "small" ? "max-w-xs" : 
                          block.imageSize === "medium" ? "max-w-md" :
                          block.imageSize === "large" ? "max-w-2xl" : "max-w-full";
         const altText = block.attachmentName || block.content;
-        return `<div class="my-4"><img src="${src}" alt="${escapeHtml(altText)}" class="w-full ${sizeClass} h-auto rounded-lg"/></div>`;
+        return `<div class="my-4"><img src="${assetPath}" alt="${escapeHtml(altText)}" class="w-full ${sizeClass} h-auto rounded-lg"/></div>`;
       }
       if (block.type === "pdf") {
-        const assetData = block.attachmentId ? assetDataMap.get(block.attachmentId) : undefined;
-        const href = assetData?.dataUrl || block.attachmentData;
-        if (!href) {
+        const assetId = block.attachmentId || `temp-${block.id}`;
+        const assetData = assetBlobMap.get(assetId);
+        if (!assetData) {
           console.warn(`Missing PDF data for block ${block.id}`);
           return "";
         }
-        const fileName = block.attachmentName || block.content;
-        return `<div class="my-4 rounded-lg border p-3 md:p-4 bg-gray-50"><div class="flex flex-col sm:flex-row items-start sm:items-center gap-3"><svg class="h-5 w-5 sm:h-6 sm:w-6 text-blue-700 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg><div class="flex-1 min-w-0"><p class="font-medium text-sm sm:text-base break-words">${escapeHtml(fileName)}</p><p class="text-xs sm:text-sm text-gray-500">PDF Document</p></div><a href="${href}" download="${escapeHtml(fileName)}" class="px-3 py-1.5 text-sm border rounded-md hover:bg-gray-100 w-full sm:w-auto text-center flex-shrink-0">Download</a></div></div>`;
+        const fileName = assetData.name || block.attachmentName || block.content || `document-${assetId}.pdf`;
+        const assetPath = `assets/${assetId}.pdf`;
+        return `<div class="my-4 rounded-lg border p-3 md:p-4 bg-gray-50"><div class="flex flex-col sm:flex-row items-start sm:items-center gap-3"><svg class="h-5 w-5 sm:h-6 sm:w-6 text-blue-700 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg><div class="flex-1 min-w-0"><p class="font-medium text-sm sm:text-base break-words">${escapeHtml(fileName)}</p><p class="text-xs sm:text-sm text-gray-500">PDF Document</p></div><a href="${assetPath}" download="${escapeHtml(fileName)}" class="px-3 py-1.5 text-sm border rounded-md hover:bg-gray-100 w-full sm:w-auto text-center flex-shrink-0">Download</a></div></div>`;
       }
       if (block.type === "video") {
-        const assetData = block.attachmentId ? assetDataMap.get(block.attachmentId) : undefined;
-        const src = assetData?.dataUrl || block.attachmentData;
-        if (!src) {
+        const assetId = block.attachmentId || `temp-${block.id}`;
+        const assetData = assetBlobMap.get(assetId);
+        if (!assetData) {
           console.warn(`Missing video data for block ${block.id}`);
           return "";
         }
+        const fileName = assetData.name || block.attachmentName || block.content || `video-${assetId}`;
+        const fileExtension = fileName.split('.').pop() || 'mp4';
+        const assetPath = `assets/${assetId}.${fileExtension}`;
         const caption = block.attachmentName || block.content;
-        return `<div class="my-4"><video controls class="w-full max-w-full h-auto rounded-lg border" src="${src}" style="box-shadow: 0 4px 20px -2px rgba(37, 99, 235, 0.08);">Your browser does not support the video tag.</video><p class="mt-2 text-xs sm:text-sm text-gray-500">${escapeHtml(caption)}</p></div>`;
+        return `<div class="my-4"><video controls class="w-full max-w-full h-auto rounded-lg border" src="${assetPath}" style="box-shadow: 0 4px 20px -2px rgba(37, 99, 235, 0.08);">Your browser does not support the video tag.</video><p class="mt-2 text-xs sm:text-sm text-gray-500">${escapeHtml(caption)}</p></div>`;
       }
       if (block.type === "link") {
         return `<div class="my-4 rounded-lg border p-3 md:p-4 bg-gray-50"><div class="flex items-start sm:items-center gap-3"><svg class="h-5 w-5 sm:h-6 sm:w-6 text-blue-700 flex-shrink-0 mt-0.5 sm:mt-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path></svg><a href="${escapeHtml(block.content)}" target="_blank" rel="noopener noreferrer" class="flex-1 text-blue-700 hover:underline break-all text-sm sm:text-base">${escapeHtml(block.content)}</a></div></div>`;
       }
+      if (block.type === "table" && block.tableData) {
+        const tableRows = block.tableData.map(row => {
+          const cells = row.map(cell => {
+            // Check if content contains HTML tags (formatted content)
+            const hasHTML = /<[a-z][\s\S]*>/i.test(cell.content);
+            const cellContent = hasHTML ? cell.content : escapeHtml(cell.content);
+            return `<td class="border-r last:border-r-0 p-2">${cellContent}</td>`;
+          }).join('');
+          return `<tr class="border-b last:border-b-0">${cells}</tr>`;
+        }).join('');
+        return `<div class="my-4 overflow-x-auto border rounded-lg"><table class="w-full"><tbody>${tableRows}</tbody></table></div>`;
+      }
+      if (block.type === "bulletList") {
+        const items = (block.content || "").split("\n").filter(Boolean);
+        const listItems = items.map(item => {
+          const hasHTML = /<[a-z][\s\S]*>/i.test(item);
+          const itemContent = hasHTML ? item : escapeHtml(item);
+          return `<li class="text-sm sm:text-base md:text-lg leading-6 md:leading-7 mb-2">${itemContent}</li>`;
+        }).join('');
+        if (block.bulletStyle === "decimal") {
+          return `<ol class="my-4 list-decimal list-inside space-y-1 pl-4" style="list-style-type: decimal;">${listItems}</ol>`;
+        }
+        const listStyleType = block.bulletStyle || "disc";
+        return `<ul class="my-4 list-inside space-y-1 pl-4" style="list-style-type: ${listStyleType};">${listItems}</ul>`;
+      }
       // Handle content with potential image/PDF placeholders
       const processedContent = block.content.replace(/\[(?:IMAGE|PDF):[^\]]+\]/g, '');
+      // Check if content contains HTML tags (formatted content)
+      const hasHTML = /<[a-z][\s\S]*>/i.test(processedContent);
+      if (hasHTML) {
+        return `<p class="text-sm sm:text-base md:text-lg leading-6 md:leading-7 mb-3 md:mb-4 whitespace-pre-wrap break-words">${processedContent}</p>`;
+      }
       return `<p class="text-sm sm:text-base md:text-lg leading-6 md:leading-7 mb-3 md:mb-4 whitespace-pre-wrap break-words">${escapeHtml(processedContent).replace(/\n/g, '<br>')}</p>`;
     };
 
@@ -1070,13 +1205,13 @@ const DocumentEditor = () => {
           </div>
           <div class="mt-8 md:mt-12 pt-6 md:pt-8 border-t flex flex-col sm:flex-row gap-3 sm:gap-4">
             ${prev ? `
-              <button onclick="showSection('${prev.id}'); return false;" class="nav-btn flex gap-2 flex-1 py-3 md:py-4 px-4 border rounded-lg hover:bg-gray-50 text-left w-full sm:w-auto">
+              <button onclick="showSection('${prev.id}'); scrollMainToTop(); return false;" class="nav-btn flex gap-2 flex-1 py-3 md:py-4 px-4 border rounded-lg hover:bg-gray-50 text-left w-full sm:w-auto">
                 <svg class="h-5 w-5 rotate-180 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
                 <div class="text-left flex-1 min-w-0"><div class="text-xs text-gray-500">Previous</div><div class="font-medium truncate text-sm md:text-base">${escapeHtml(prev.title)}</div></div>
               </button>
             ` : '<div class="hidden sm:block flex-1"></div>'}
             ${next ? `
-              <button onclick="showSection('${next.id}'); return false;" class="nav-btn flex gap-2 flex-1 py-3 md:py-4 px-4 border rounded-lg hover:bg-gray-50 text-right w-full sm:w-auto">
+              <button onclick="showSection('${next.id}'); scrollMainToTop(); return false;" class="nav-btn flex gap-2 flex-1 py-3 md:py-4 px-4 border rounded-lg hover:bg-gray-50 text-right w-full sm:w-auto">
                 <div class="text-right flex-1 min-w-0"><div class="text-xs text-gray-500">Next</div><div class="font-medium truncate text-sm md:text-base">${escapeHtml(next.title)}</div></div>
                 <svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
               </button>
@@ -1201,6 +1336,85 @@ const DocumentEditor = () => {
     html { scroll-behavior: smooth; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; }
     
+    /* Custom scrollbar styling - thin and subtle */
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(0, 0, 0, 0.1) transparent;
+    }
+    
+    *::-webkit-scrollbar {
+      width: 4px;
+      height: 4px;
+    }
+    
+    *::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    
+    *::-webkit-scrollbar-thumb {
+      background-color: rgba(0, 0, 0, 0.1);
+      border-radius: 2px;
+      border: none;
+    }
+    
+    *::-webkit-scrollbar-thumb:hover {
+      background-color: rgba(0, 0, 0, 0.2);
+    }
+    
+    /* Hide scrollbar by default, show on hover for main content */
+    main {
+      scrollbar-width: thin;
+      scrollbar-color: transparent transparent;
+    }
+    
+    main:hover {
+      scrollbar-color: rgba(0, 0, 0, 0.1) transparent;
+    }
+    
+    main::-webkit-scrollbar {
+      width: 4px;
+    }
+    
+    main::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    
+    main::-webkit-scrollbar-thumb {
+      background-color: transparent;
+      border-radius: 2px;
+    }
+    
+    main:hover::-webkit-scrollbar-thumb {
+      background-color: rgba(0, 0, 0, 0.1);
+    }
+    
+    main:hover::-webkit-scrollbar-thumb:hover {
+      background-color: rgba(0, 0, 0, 0.2);
+    }
+    
+    /* Sidebar scrollbar - always thin and subtle */
+    aside {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(0, 0, 0, 0.08) transparent;
+    }
+    
+    aside::-webkit-scrollbar {
+      width: 4px;
+    }
+    
+    aside::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    
+    aside::-webkit-scrollbar-thumb {
+      background-color: rgba(0, 0, 0, 0.08);
+      border-radius: 2px;
+    }
+    
+    aside::-webkit-scrollbar-thumb:hover {
+      background-color: rgba(0, 0, 0, 0.15);
+    }
+    
     /* Sidebar Navigation Styles */
     .sidebar-btn { 
       position: relative;
@@ -1215,6 +1429,8 @@ const DocumentEditor = () => {
       background: hsl(258 30% 96%) !important;
       font-weight: 600 !important;
       color: hsl(258 63% 29%) !important;
+      border-left: 3px solid hsl(258 63% 29%) !important;
+      padding-left: calc(0.75rem - 3px) !important;
     }
     
     .section-content { display: none; }
@@ -1235,7 +1451,7 @@ const DocumentEditor = () => {
 <body class="bg-white text-gray-800">
   <!-- Header -->
   <header class="sticky top-0 z-50 w-full border-b bg-white/95" style="backdrop-filter: blur(8px);">
-    <div class="container max-w-7xl mx-auto flex h-16 items-center justify-between px-4">
+    <div class="container max-w-screen-2xl mx-auto flex h-16 items-center justify-between px-4">
       <div class="flex items-center gap-3">
         <!-- Mobile Menu Button -->
         <button id="mobileMenuBtn" onclick="toggleMobileMenu(); event.stopPropagation();" class="md:hidden p-2 hover:bg-gray-100 rounded-md">
@@ -1284,8 +1500,10 @@ const DocumentEditor = () => {
   </div>
 
   <div class="flex overflow-hidden">
+    <!-- Wrapper to align with header max-width -->
+    <div class="w-full max-w-screen-2xl mx-auto flex">
     <!-- Sidebar - Hidden on mobile -->
-    <aside id="sidebar" class="hidden md:block w-72 border-r h-[calc(100vh-4rem)] overflow-y-auto" style="background: hsl(258 30% 98%);">
+      <aside id="sidebar" class="hidden md:block w-72 border-r h-[calc(100vh-4rem)] overflow-y-auto flex-shrink-0" style="background: hsl(258 30% 98%);">
       <div class="p-4">
         <h2 class="mb-4 text-lg font-bold" style="color: hsl(258 63% 29%);">${escapeHtml(title)}</h2>
         <nav class="space-y-1" id="sidebarNav">
@@ -1295,11 +1513,12 @@ const DocumentEditor = () => {
     </aside>
 
     <!-- Main Content -->
-    <main class="flex-1 overflow-y-auto h-[calc(100vh-4rem)]">
-      <div class="container max-w-7xl mx-auto px-4 sm:px-6 md:px-8 py-6 md:py-12" id="mainContent">
+      <main class="flex-1 overflow-y-auto h-[calc(100vh-4rem)] min-w-0">
+        <div class="px-4 sm:px-6 md:px-8 py-6 md:py-12" id="mainContent">
         ${allSections.map((section, index) => renderSectionHTML(section, index)).join('\n')}
       </div>
     </main>
+    </div>
   </div>
 
   <script>
@@ -1370,6 +1589,16 @@ const DocumentEditor = () => {
       }
     }
 
+    function scrollMainToTop() {
+      // Scroll to top of main content container (the scrollable main element)
+      const mainElement = document.querySelector('main');
+      if (mainElement) {
+        mainElement.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+      // Also scroll window to top
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
     function showSection(sectionId) {
       // Expand all parent sections
       const parentIds = findParentIds(sectionId);
@@ -1395,23 +1624,33 @@ const DocumentEditor = () => {
       }
       
       // Update active button in sidebar (both desktop and mobile)
+      // Remove active state from all buttons
       document.querySelectorAll('.sidebar-btn').forEach(el => {
         el.classList.remove('active');
         el.classList.remove('bg-gray-100', 'font-semibold', 'text-blue-800');
+        el.style.borderLeft = '';
+        el.style.paddingLeft = '';
         el.classList.add('text-gray-600');
       });
       
-      const btn = document.querySelector('[data-section="' + sectionId + '"]');
+      // Add active state to current section button in desktop sidebar
+      const btn = document.querySelector('#sidebarNav [data-section="' + sectionId + '"]');
       if (btn) {
-        btn.classList.add('active', 'bg-gray-100', 'font-semibold', 'text-blue-800');
+        btn.classList.add('active');
+        btn.classList.add('bg-gray-100', 'font-semibold', 'text-blue-800');
         btn.classList.remove('text-gray-600');
+        btn.style.borderLeft = '3px solid hsl(258 63% 29%)';
+        btn.style.paddingLeft = 'calc(0.75rem - 3px)';
       }
       
       // Also update mobile sidebar button
       const mobileBtn = document.querySelector('#mobileSidebarNav [data-section="' + sectionId + '"]');
       if (mobileBtn) {
-        mobileBtn.classList.add('active', 'bg-gray-100', 'font-semibold', 'text-blue-800');
+        mobileBtn.classList.add('active');
+        mobileBtn.classList.add('bg-gray-100', 'font-semibold', 'text-blue-800');
         mobileBtn.classList.remove('text-gray-600');
+        mobileBtn.style.borderLeft = '3px solid hsl(258 63% 29%)';
+        mobileBtn.style.paddingLeft = 'calc(0.75rem - 3px)';
       }
       
       currentSection = sectionId;
@@ -1422,11 +1661,8 @@ const DocumentEditor = () => {
         closeMobileMenu();
       }
       
-      // Scroll to top of main content
-      const mainContent = document.getElementById('mainContent');
-      if (mainContent) {
-        mainContent.scrollTop = 0;
-      }
+      // Scroll to top
+      scrollMainToTop();
     }
 
     function toggleSubSection(sectionId, isTopLevel) {
@@ -1549,23 +1785,53 @@ const DocumentEditor = () => {
     // Initialize - expand sections and show first section
     initializeExpandedSections();
     if (currentSection) {
+      // Small delay to ensure DOM is ready
+      setTimeout(() => {
       showSection(currentSection);
+      }, 100);
     }
   </script>
 </body>
 </html>`;
 
-    const blob = new Blob([htmlContent], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
+    // Create zip file with HTML and assets
+    const zip = new JSZip();
+    
+    // Add index.html
+    zip.file("index.html", htmlContent);
+    
+    // Add assets folder with all files
+    if (assetBlobMap.size > 0) {
+      const assetsFolder = zip.folder("assets");
+      if (assetsFolder) {
+        for (const [assetId, assetData] of assetBlobMap.entries()) {
+          const fileName = assetData.name || `asset-${assetId}`;
+          const fileExtension = fileName.split('.').pop() || 
+            (assetData.type.includes('image') ? 'png' : 
+             assetData.type.includes('pdf') ? 'pdf' : 
+             assetData.type.includes('video') ? 'mp4' : 'bin');
+          const assetFileName = `${assetId}.${fileExtension}`;
+          
+          // Convert blob to array buffer for JSZip
+          const arrayBuffer = await assetData.blob.arrayBuffer();
+          assetsFolder.file(assetFileName, arrayBuffer, { binary: true });
+        }
+      }
+    }
+    
+    // Generate zip file
+    const zipBlob = await zip.generateAsync({ type: "blob" });
+    const url = URL.createObjectURL(zipBlob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${title.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.html`;
+    const sanitizedTitle = title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    link.download = `${sanitizedTitle}.zip`;
     link.click();
     URL.revokeObjectURL(url);
 
     toast({
       title: "Document exported",
-      description: "Your document has been exported as a complete standalone HTML file matching the preview.",
+      description: "Your document has been exported as a ZIP file containing index.html and assets folder.",
     });
   };
 
@@ -1678,13 +1944,15 @@ const DocumentEditor = () => {
                             <div
                               contentEditable
                               suppressContentEditableWarning
-                              onBlur={(e) =>
+                              onBlur={(e) => {
+                                const html = e.currentTarget.innerHTML;
+                                const sanitized = sanitizeHTML(html);
                                 updateBlock(
                                   currentSection.id,
                                   block.id,
-                                  e.currentTarget.textContent || ""
-                                )
-                              }
+                                  sanitized || ""
+                                );
+                              }}
                               onMouseUp={(e) => handleTextSelection(block.id, e)}
                               className="min-h-[100px] p-2 border-0 text-base outline-none focus:bg-muted/50 rounded"
                               dangerouslySetInnerHTML={{ __html: block.content || "Start typing paragraph..." }}
@@ -1807,20 +2075,21 @@ const DocumentEditor = () => {
                                             <div
                                               contentEditable
                                               suppressContentEditableWarning
-                                              onBlur={(e) =>
+                                              onBlur={(e) => {
+                                                const html = e.currentTarget.innerHTML;
+                                                const sanitized = sanitizeHTML(html);
                                                 updateTableCell(
                                                   currentSection.id,
                                                   block.id,
                                                   rowIndex,
                                                   colIndex,
-                                                  e.currentTarget.textContent || ""
-                                                )
-                                              }
+                                                  sanitized || ""
+                                                );
+                                              }}
                                               onMouseUp={(e) => handleTextSelection(block.id, e)}
                                               className="min-h-[40px] outline-none focus:bg-muted/50"
-                                            >
-                                              {cell.content}
-                                            </div>
+                                              dangerouslySetInnerHTML={{ __html: cell.content || "" }}
+                                            />
                                           </td>
                                         ))}
                                       </tr>
@@ -1897,24 +2166,163 @@ const DocumentEditor = () => {
                                   1. Decimal
                                 </Button>
                               </div>
-                              <div
+                              {block.bulletStyle === "decimal" ? (
+                                <ol
                                 contentEditable
                                 suppressContentEditableWarning
-                                onBlur={(e) =>
+                                  onFocus={(e) => {
+                                    // Clear placeholder when user focuses
+                                    const firstLi = e.currentTarget.querySelector('li');
+                                    if (firstLi && firstLi.textContent === "Type bullet points here..." && !block.content) {
+                                      firstLi.textContent = "";
+                                    }
+                                  }}
+                                  onBlur={(e) => {
+                                    const items = Array.from(e.currentTarget.children)
+                                      .filter(child => child.tagName === "LI")
+                                      .map(li => {
+                                        const html = (li as HTMLElement).innerHTML;
+                                        return sanitizeHTML(html);
+                                      })
+                                      .filter(Boolean);
                                   updateBlock(
                                     currentSection.id,
                                     block.id,
-                                    e.currentTarget.textContent || ""
-                                  )
-                                }
+                                      items.join("\n")
+                                    );
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" && !e.shiftKey) {
+                                      e.preventDefault();
+                                      const selection = window.getSelection();
+                                      if (selection && selection.rangeCount > 0) {
+                                        const range = selection.getRangeAt(0);
+                                        let li = range.commonAncestorContainer.nodeType === 1 
+                                          ? range.commonAncestorContainer as HTMLElement
+                                          : range.commonAncestorContainer.parentElement;
+                                        
+                                        // Find the closest LI element
+                                        while (li && li.tagName !== "LI" && li.tagName !== "OL") {
+                                          li = li.parentElement;
+                                        }
+                                        
+                                        if (li && li.tagName === "LI") {
+                                          const newLi = document.createElement("li");
+                                          li.parentElement?.insertBefore(newLi, li.nextSibling);
+                                          range.setStart(newLi, 0);
+                                          range.collapse(true);
+                                          selection.removeAllRanges();
+                                          selection.addRange(range);
+                                        } else if (li && li.tagName === "OL") {
+                                          // If we're at the ol level, create a new li
+                                          const newLi = document.createElement("li");
+                                          li.appendChild(newLi);
+                                          range.setStart(newLi, 0);
+                                          range.collapse(true);
+                                          selection.removeAllRanges();
+                                          selection.addRange(range);
+                                        }
+                                      }
+                                    }
+                                  }}
                                 onMouseUp={(e) => handleTextSelection(block.id, e)}
-                                className="min-h-[100px] p-4 border rounded-lg outline-none focus:bg-muted/50"
+                                  className="min-h-[100px] p-4 border rounded-lg outline-none focus:bg-muted/50 list-decimal list-inside space-y-1"
+                                  style={{
+                                    listStyleType: "decimal",
+                                  }}
+                                >
+                                  {(block.content || "").split("\n").filter(Boolean).length > 0 ? (
+                                    (block.content || "").split("\n").filter(Boolean).map((item, idx) => {
+                                      const hasHTML = /<[a-z][\s\S]*>/i.test(item);
+                                      return (
+                                        <li key={idx} dangerouslySetInnerHTML={hasHTML ? { __html: item } : undefined}>
+                                          {!hasHTML && item}
+                                        </li>
+                                      );
+                                    })
+                                  ) : (
+                                    <li className="text-muted-foreground">Type bullet points here...</li>
+                                  )}
+                                </ol>
+                              ) : (
+                                <ul
+                                  contentEditable
+                                  suppressContentEditableWarning
+                                  onFocus={(e) => {
+                                    // Clear placeholder when user focuses
+                                    const firstLi = e.currentTarget.querySelector('li');
+                                    if (firstLi && firstLi.textContent === "Type bullet points here..." && !block.content) {
+                                      firstLi.textContent = "";
+                                    }
+                                  }}
+                                  onBlur={(e) => {
+                                    const items = Array.from(e.currentTarget.children)
+                                      .filter(child => child.tagName === "LI")
+                                      .map(li => {
+                                        const html = (li as HTMLElement).innerHTML;
+                                        return sanitizeHTML(html);
+                                      })
+                                      .filter(Boolean);
+                                    updateBlock(
+                                      currentSection.id,
+                                      block.id,
+                                      items.join("\n")
+                                    );
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" && !e.shiftKey) {
+                                      e.preventDefault();
+                                      const selection = window.getSelection();
+                                      if (selection && selection.rangeCount > 0) {
+                                        const range = selection.getRangeAt(0);
+                                        let li = range.commonAncestorContainer.nodeType === 1 
+                                          ? range.commonAncestorContainer as HTMLElement
+                                          : range.commonAncestorContainer.parentElement;
+                                        
+                                        // Find the closest LI element
+                                        while (li && li.tagName !== "LI" && li.tagName !== "UL") {
+                                          li = li.parentElement;
+                                        }
+                                        
+                                        if (li && li.tagName === "LI") {
+                                          const newLi = document.createElement("li");
+                                          li.parentElement?.insertBefore(newLi, li.nextSibling);
+                                          range.setStart(newLi, 0);
+                                          range.collapse(true);
+                                          selection.removeAllRanges();
+                                          selection.addRange(range);
+                                        } else if (li && li.tagName === "UL") {
+                                          // If we're at the ul level, create a new li
+                                          const newLi = document.createElement("li");
+                                          li.appendChild(newLi);
+                                          range.setStart(newLi, 0);
+                                          range.collapse(true);
+                                          selection.removeAllRanges();
+                                          selection.addRange(range);
+                                        }
+                                      }
+                                    }
+                                  }}
+                                  onMouseUp={(e) => handleTextSelection(block.id, e)}
+                                  className="min-h-[100px] p-4 border rounded-lg outline-none focus:bg-muted/50 list-inside space-y-1"
                                 style={{
                                   listStyleType: block.bulletStyle || "disc",
                                 }}
                               >
-                                {block.content || "Type bullet points here..."}
-                              </div>
+                                  {(block.content || "").split("\n").filter(Boolean).length > 0 ? (
+                                    (block.content || "").split("\n").filter(Boolean).map((item, idx) => {
+                                      const hasHTML = /<[a-z][\s\S]*>/i.test(item);
+                                      return (
+                                        <li key={idx} dangerouslySetInnerHTML={hasHTML ? { __html: item } : undefined}>
+                                          {!hasHTML && item}
+                                        </li>
+                                      );
+                                    })
+                                  ) : (
+                                    <li className="text-muted-foreground">Type bullet points here...</li>
+                                  )}
+                                </ul>
+                              )}
                             </div>
                           )}
                           

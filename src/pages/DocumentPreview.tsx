@@ -10,14 +10,30 @@ import { LucideIcon } from "lucide-react";
 import { getDocumentById, saveDocument as saveDocumentToStorage, type Document } from "@/lib/localStorage";
 import { getAssetObjectUrl, saveAssetFromDataUrl } from "@/lib/assetStorage";
 
+interface TableCell {
+  content: string;
+  formatting?: {
+    bold?: boolean;
+    italic?: boolean;
+    underline?: boolean;
+  };
+}
+
 interface Block {
   id: string;
-  type: "paragraph" | "h1" | "h2" | "h3" | "image" | "pdf" | "link" | "video";
+  type: "paragraph" | "h1" | "h2" | "h3" | "image" | "pdf" | "link" | "video" | "table" | "bulletList";
   content: string;
   attachmentId?: string;
   attachmentName?: string;
   attachmentType?: string;
   attachmentData?: string;
+  tableData?: TableCell[][];
+  bulletStyle?: "disc" | "circle" | "square" | "decimal";
+  formatting?: {
+    bold?: boolean;
+    italic?: boolean;
+    underline?: boolean;
+  };
 }
 
 interface Section {
@@ -48,6 +64,7 @@ const DocumentPreview = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Array<{sectionId: string; sectionTitle: string; matchText: string}>>([]);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const mainContentRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     return () => {
@@ -442,6 +459,70 @@ const DocumentPreview = () => {
           </div>
         );
       }
+      if (block.type === "table" && block.tableData) {
+        return (
+          <div key={block.id} className="my-4 overflow-x-auto border rounded-lg">
+            <table className="w-full">
+              <tbody>
+                {block.tableData.map((row, rowIndex) => (
+                  <tr key={rowIndex} className="border-b last:border-b-0">
+                    {row.map((cell, colIndex) => {
+                      const hasHTML = /<[a-z][\s\S]*>/i.test(cell.content);
+                      return (
+                        <td key={colIndex} className="border-r last:border-r-0 p-2">
+                          {hasHTML ? (
+                            <div dangerouslySetInnerHTML={{ __html: cell.content }} />
+                          ) : (
+                            cell.content
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
+      if (block.type === "bulletList") {
+        const items = (block.content || "").split("\n").filter(Boolean);
+        const renderItem = (item: string, idx: number) => {
+          const hasHTML = /<[a-z][\s\S]*>/i.test(item);
+          return (
+            <li key={idx} className="text-sm sm:text-base md:text-lg leading-6 md:leading-7 mb-2">
+              {hasHTML ? (
+                <span dangerouslySetInnerHTML={{ __html: item }} />
+              ) : (
+                item
+              )}
+            </li>
+          );
+        };
+        if (block.bulletStyle === "decimal") {
+          return (
+            <ol key={block.id} className="my-4 list-decimal list-inside space-y-1 pl-4" style={{ listStyleType: "decimal" }}>
+              {items.map(renderItem)}
+            </ol>
+          );
+        }
+        return (
+          <ul key={block.id} className="my-4 list-inside space-y-1 pl-4" style={{ listStyleType: block.bulletStyle || "disc" }}>
+            {items.map(renderItem)}
+          </ul>
+        );
+      }
+      // Check if content contains HTML tags (formatted content)
+      const hasHTML = /<[a-z][\s\S]*>/i.test(block.content);
+      if (hasHTML) {
+        return (
+          <p 
+            key={block.id} 
+            className="text-sm sm:text-base md:text-lg leading-6 md:leading-7 mb-3 md:mb-4 whitespace-pre-wrap break-words"
+            dangerouslySetInnerHTML={{ __html: block.content }}
+          />
+        );
+      }
       return (
         <p key={block.id} className="text-sm sm:text-base md:text-lg leading-6 md:leading-7 mb-3 md:mb-4 whitespace-pre-wrap break-words">
           {renderBlockContent(block.content)}
@@ -523,6 +604,11 @@ const DocumentPreview = () => {
             onClick={() => {
               setActiveSection(section.id);
               setMobileMenuOpen(false);
+              // Scroll main content container to top
+              if (mainContentRef.current) {
+                mainContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+              window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
             className={`w-full flex items-start gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-muted ${
               activeSection === section.id
@@ -567,9 +653,66 @@ const DocumentPreview = () => {
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
+      <style>{`
+        /* Custom scrollbar styling - thin and subtle */
+        * {
+          scrollbar-width: thin;
+          scrollbar-color: rgba(0, 0, 0, 0.1) transparent;
+        }
+        
+        *::-webkit-scrollbar {
+          width: 4px;
+          height: 4px;
+        }
+        
+        *::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        
+        *::-webkit-scrollbar-thumb {
+          background-color: rgba(0, 0, 0, 0.1);
+          border-radius: 2px;
+          border: none;
+        }
+        
+        *::-webkit-scrollbar-thumb:hover {
+          background-color: rgba(0, 0, 0, 0.2);
+        }
+        
+        /* Hide scrollbar by default, show on hover for main content */
+        main {
+          scrollbar-width: thin;
+          scrollbar-color: transparent transparent;
+        }
+        
+        main:hover {
+          scrollbar-color: rgba(0, 0, 0, 0.1) transparent;
+        }
+        
+        main::-webkit-scrollbar {
+          width: 4px;
+        }
+        
+        main::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        
+        main::-webkit-scrollbar-thumb {
+          background-color: transparent;
+          border-radius: 2px;
+        }
+        
+        main:hover::-webkit-scrollbar-thumb {
+          background-color: rgba(0, 0, 0, 0.1);
+        }
+        
+        main:hover::-webkit-scrollbar-thumb:hover {
+          background-color: rgba(0, 0, 0, 0.2);
+        }
+      `}</style>
       {/* Header */}
       <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur">
-        <div className="container max-w-7xl mx-auto flex h-16 items-center justify-between px-4">
+        <div className="container max-w-screen-2xl mx-auto flex h-16 items-center justify-between px-4">
           <div className="flex items-center gap-3">
             {/* Mobile Menu Button */}
             <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
@@ -649,6 +792,11 @@ const DocumentPreview = () => {
                     setActiveSection(result.sectionId);
                     setSearchQuery("");
                     setMobileMenuOpen(false);
+                    // Scroll main content container to top
+                    if (mainContentRef.current) {
+                      mainContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+                    }
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
                   }}
                 >
                   <div className="font-medium text-sm text-primary mb-1">{result.sectionTitle}</div>
@@ -661,21 +809,23 @@ const DocumentPreview = () => {
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Left Sidebar - Navigation - Hidden on mobile */}
-        <aside className="hidden md:flex w-64 border-r bg-muted/30 flex-col h-[calc(100vh-4rem)]">
-          <ScrollArea className="flex-1">
-            <div className="p-4">
-              <h2 className="mb-4 text-lg font-bold">{title}</h2>
-              <nav className="space-y-1">
-                {renderSectionNav(sections)}
-              </nav>
-            </div>
-          </ScrollArea>
-        </aside>
+        {/* Wrapper to align with header max-width */}
+        <div className="w-full max-w-screen-2xl mx-auto flex">
+          {/* Left Sidebar - Navigation - Hidden on mobile */}
+          <aside className="hidden md:flex w-64 border-r bg-muted/30 flex-col h-[calc(100vh-4rem)] flex-shrink-0">
+            <ScrollArea className="flex-1">
+              <div className="p-4">
+                <h2 className="mb-4 text-lg font-bold">{title}</h2>
+                <nav className="space-y-1">
+                  {renderSectionNav(sections)}
+                </nav>
+              </div>
+            </ScrollArea>
+          </aside>
 
-        {/* Main Content Area - Scrollable */}
-        <main className="flex-1 overflow-y-auto h-[calc(100vh-4rem)]">
-          <div className="container max-w-7xl mx-auto px-4 sm:px-6 md:px-8 py-6 md:py-12">
+          {/* Main Content Area - Scrollable */}
+          <main ref={mainContentRef} className="flex-1 overflow-y-auto h-[calc(100vh-4rem)] min-w-0">
+            <div className="px-4 sm:px-6 md:px-8 py-6 md:py-12">
             {currentSection && (
               <div>
                 <h1 className="mb-4 md:mb-6 text-2xl sm:text-3xl md:text-4xl font-bold">{currentSection.title}</h1>
@@ -688,7 +838,14 @@ const DocumentPreview = () => {
                   {previousSection ? (
                     <Button
                       variant="outline"
-                      onClick={() => setActiveSection(previousSection.id)}
+                      onClick={() => {
+                        setActiveSection(previousSection.id);
+                        // Scroll main content container to top
+                        if (mainContentRef.current) {
+                          mainContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+                        }
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                      }}
                       className="gap-2 flex-1 h-auto py-3 md:py-4 w-full sm:w-auto"
                     >
                       <ChevronRight className="h-5 w-5 rotate-180 flex-shrink-0" />
@@ -704,7 +861,14 @@ const DocumentPreview = () => {
                   {nextSection ? (
                     <Button
                       variant="outline"
-                      onClick={() => setActiveSection(nextSection.id)}
+                      onClick={() => {
+                        setActiveSection(nextSection.id);
+                        // Scroll main content container to top
+                        if (mainContentRef.current) {
+                          mainContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+                        }
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                      }}
                       className="gap-2 flex-1 h-auto py-3 md:py-4 w-full sm:w-auto"
                     >
                       <div className="text-right flex-1 min-w-0">
@@ -726,6 +890,7 @@ const DocumentPreview = () => {
             )}
           </div>
         </main>
+        </div>
       </div>
     </div>
   );
