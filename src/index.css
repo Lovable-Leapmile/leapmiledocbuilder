@@ -108,4 +108,21 @@ All colors MUST be HSL.
   body {
     @apply bg-background text-foreground;
   }
+
+  .rich-editor-surface a,
+  .rich-editor-surface [contenteditable="true"] a {
+    color: hsl(var(--primary));
+    font-weight: 600;
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+    text-underline-offset: 3px;
+    background-color: hsl(var(--primary) / 0.12);
+    border-radius: 0.4rem;
+    padding: 0 0.25rem;
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  .rich-editor-surface a:hover {
+    background-color: hsl(var(--primary) / 0.2);
+  }
 }

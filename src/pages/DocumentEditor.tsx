@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Navigation } from "@/components/Navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,7 +22,18 @@ import {
   AlertCircle,
   Table as TableIcon,
   List,
+  Home,
+  Info,
+  Users,
+  Settings,
+  BookOpen,
+  Lightbulb,
+  Target,
+  Shield,
+  Briefcase,
+  Compass,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -36,6 +47,16 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAuth } from "@/hooks/useAuth";
 import { getDocumentById, saveDocument as saveToLocalStorage, generateId, type Document } from "@/lib/localStorage";
 import {
@@ -59,9 +80,26 @@ interface TableCell {
   };
 }
 
+interface NavigationItem {
+  id: string;
+  label: string;
+  targetSectionId?: string;
+}
+
 interface Block {
   id: string;
-  type: "paragraph" | "h1" | "h2" | "h3" | "image" | "pdf" | "link" | "video" | "table" | "bulletList";
+  type:
+    | "paragraph"
+    | "h1"
+    | "h2"
+    | "h3"
+    | "image"
+    | "pdf"
+    | "link"
+    | "video"
+    | "table"
+    | "bulletList"
+    | "navigation";
   content: string;
   attachmentId?: string;
   attachmentName?: string;
@@ -70,6 +108,7 @@ interface Block {
   imageSize?: "small" | "medium" | "large" | "full"; // For image sizing
   tableData?: TableCell[][];
   bulletStyle?: "disc" | "circle" | "square" | "decimal";
+  navItems?: NavigationItem[];
   formatting?: {
     bold?: boolean;
     italic?: boolean;
@@ -84,6 +123,27 @@ interface Section {
   children?: Section[];
   parentId?: string;
 }
+
+const SECTION_ICON_MATCHERS: Array<{ keywords: string[]; icon: LucideIcon }> = [
+  { keywords: ["intro", "welcome", "home"], icon: Home },
+  { keywords: ["about", "info", "overview"], icon: Info },
+  { keywords: ["team", "people", "user"], icon: Users },
+  { keywords: ["setting", "config", "preference"], icon: Settings },
+  { keywords: ["document", "guide", "manual", "policy"], icon: BookOpen },
+  { keywords: ["idea", "innovation", "concept"], icon: Lightbulb },
+  { keywords: ["target", "objective", "goal", "mission"], icon: Target },
+  { keywords: ["security", "safety", "compliance"], icon: Shield },
+  { keywords: ["project", "plan", "roadmap"], icon: Briefcase },
+  { keywords: ["explore", "navigation", "map"], icon: Compass },
+];
+
+const getSectionIconComponent = (title: string): LucideIcon => {
+  const lower = title.toLowerCase();
+  const match = SECTION_ICON_MATCHERS.find((entry) =>
+    entry.keywords.some((keyword) => lower.includes(keyword))
+  );
+  return match ? match.icon : FileText;
+};
 
 const DocumentEditor = () => {
   const { id } = useParams();
@@ -111,9 +171,20 @@ const DocumentEditor = () => {
   const [editingImageBlockId, setEditingImageBlockId] = useState<string | null>(null);
   const [textSelection, setTextSelection] = useState<{
     blockId: string;
+    sectionId: string;
     position: { x: number; y: number };
+    text: string;
   } | null>(null);
+  const selectionRangeRef = useRef<Range | null>(null);
   const [editingTableBlock, setEditingTableBlock] = useState<string | null>(null);
+  const [linkDialogOpen, setLinkDialogOpen] = useState(false);
+  const [linkMode, setLinkMode] = useState<"external" | "internal">("external");
+  const [linkUrl, setLinkUrl] = useState("");
+  const [linkTargetId, setLinkTargetId] = useState("");
+  const [linkingBlockId, setLinkingBlockId] = useState<string | null>(null);
+  const [linkingSectionId, setLinkingSectionId] = useState<string | null>(null);
+  const [linkingText, setLinkingText] = useState("");
+  const editorCardRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     return () => {
@@ -338,6 +409,30 @@ const DocumentEditor = () => {
     return () => stopAutoBackup();
   }, []);
 
+  useEffect(() => {
+    const container = editorCardRef.current;
+    if (!container) return;
+
+    const handleLinkClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      const anchor = target.closest("a[data-section-link]") as HTMLElement | null;
+      if (anchor && container.contains(anchor)) {
+        event.preventDefault();
+        const targetId = anchor.getAttribute("data-section-link");
+        if (targetId) {
+          setActiveSection(targetId);
+          container.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+      }
+    };
+
+    container.addEventListener("click", handleLinkClick);
+    return () => {
+      container.removeEventListener("click", handleLinkClick);
+    };
+  }, []);
+
   const saveDocument = () => {
     if (!user) {
       toast({
@@ -519,6 +614,9 @@ const DocumentEditor = () => {
       ...(type === "bulletList" && {
         bulletStyle: "disc" as const,
       }),
+      ...(type === "navigation" && {
+        navItems: [],
+      }),
     };
 
     const section = findSection(sectionId);
@@ -570,6 +668,54 @@ const DocumentEditor = () => {
       );
       updateSection(sectionId, "content", updatedContent);
     }
+  };
+
+  const updateBlockById = (
+    sectionId: string,
+    blockId: string,
+    updater: (block: Block) => Block
+  ) => {
+    const section = findSection(sectionId);
+    if (!section) return;
+    const updatedContent = section.content.map((block) =>
+      block.id === blockId ? updater(block) : block
+    );
+    updateSection(sectionId, "content", updatedContent);
+  };
+
+  const addNavigationItem = (sectionId: string, blockId: string) => {
+    updateBlockById(sectionId, blockId, (block) => ({
+      ...block,
+      navItems: [
+        ...(block.navItems || []),
+        {
+          id: generateId(),
+          label: "",
+          targetSectionId: undefined,
+        },
+      ],
+    }));
+  };
+
+  const updateNavigationItem = (
+    sectionId: string,
+    blockId: string,
+    itemId: string,
+    updates: Partial<NavigationItem>
+  ) => {
+    updateBlockById(sectionId, blockId, (block) => ({
+      ...block,
+      navItems: (block.navItems || []).map((item) =>
+        item.id === itemId ? { ...item, ...updates } : item
+      ),
+    }));
+  };
+
+  const removeNavigationItem = (sectionId: string, blockId: string, itemId: string) => {
+    updateBlockById(sectionId, blockId, (block) => ({
+      ...block,
+      navItems: (block.navItems || []).filter((item) => item.id !== itemId),
+    }));
   };
 
   const updateTableCell = (sectionId: string, blockId: string, rowIndex: number, colIndex: number, content: string) => {
@@ -659,15 +805,28 @@ const DocumentEditor = () => {
 
   const handleTextSelection = (blockId: string, event: React.MouseEvent) => {
     const selection = window.getSelection();
-    if (selection && selection.toString().length > 0) {
+    if (selection && selection.rangeCount > 0 && selection.toString().length > 0) {
       const range = selection.getRangeAt(0);
       const rect = range.getBoundingClientRect();
+      selectionRangeRef.current = range.cloneRange();
       setTextSelection({
         blockId,
+        sectionId: currentSection?.id ?? "",
         position: { x: rect.left + rect.width / 2, y: rect.top },
+        text: selection.toString(),
       });
     } else {
+      selectionRangeRef.current = null;
       setTextSelection(null);
+    }
+  };
+
+  const restoreSavedSelection = () => {
+    if (!selectionRangeRef.current) return;
+    const selection = window.getSelection();
+    if (selection) {
+      selection.removeAllRanges();
+      selection.addRange(selectionRangeRef.current);
     }
   };
 
@@ -679,7 +838,7 @@ const DocumentEditor = () => {
     div.innerHTML = html;
     
     // Only allow these tags
-    const allowedTags = ['b', 'strong', 'i', 'em', 'u', 'br', 'p', 'span'];
+    const allowedTags = ['a', 'b', 'strong', 'i', 'em', 'u', 'br', 'p', 'span'];
     
     const sanitizeNode = (node: Node): Node | null => {
       if (node.nodeType === Node.TEXT_NODE) {
@@ -697,6 +856,21 @@ const DocumentEditor = () => {
         
         // Create a new element with the same tag
         const newElement = document.createElement(tagName);
+        if (tagName === 'a') {
+          const href = element.getAttribute('href') || '';
+          if (/^(https?:|mailto:|#)/i.test(href)) {
+            newElement.setAttribute('href', href);
+          }
+          const target = element.getAttribute('target');
+          if (target === '_blank') {
+            newElement.setAttribute('target', '_blank');
+            newElement.setAttribute('rel', element.getAttribute('rel') || 'noopener noreferrer');
+          }
+          const sectionLink = element.getAttribute('data-section-link');
+          if (sectionLink) {
+            newElement.setAttribute('data-section-link', sectionLink);
+          }
+        }
         
         // Copy allowed children
         Array.from(element.childNodes).forEach(child => {
@@ -724,8 +898,112 @@ const DocumentEditor = () => {
   };
 
   const applyTextFormatting = (format: "bold" | "italic" | "underline") => {
+    restoreSavedSelection();
     document.execCommand(format);
     setTextSelection(null);
+    selectionRangeRef.current = null;
+  };
+
+  const openLinkPicker = () => {
+    if (!textSelection || !selectionRangeRef.current || !textSelection.text.trim()) {
+      toast({
+        title: "Select some text first",
+        description: "Highlight the text you want to turn into a link.",
+      });
+      return;
+    }
+    setLinkDialogOpen(true);
+    setLinkMode("external");
+    setLinkUrl("");
+    setLinkTargetId("");
+    setLinkingBlockId(textSelection.blockId);
+    setLinkingSectionId(textSelection.sectionId || null);
+    setLinkingText(textSelection.text);
+    setTextSelection(null);
+  };
+
+  const closeLinkDialog = () => {
+    setLinkDialogOpen(false);
+    setLinkingBlockId(null);
+    setLinkingSectionId(null);
+    setLinkTargetId("");
+    setLinkUrl("");
+    setLinkingText("");
+    selectionRangeRef.current = null;
+  };
+
+  const applyLinkToSelection = () => {
+    if (!selectionRangeRef.current || !linkingBlockId) {
+      closeLinkDialog();
+      return;
+    }
+
+    if (linkMode === "external" && !linkUrl.trim()) {
+      toast({
+        title: "Enter a link",
+        description: "Please paste a valid URL.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (linkMode === "internal" && !linkTargetId) {
+      toast({
+        title: "Choose a section",
+        description: "Select a section or sub-section to link to.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const range = selectionRangeRef.current;
+    const selectedContent = range.cloneContents();
+    if (!selectedContent.textContent?.trim()) {
+      toast({
+        title: "Select some text",
+        description: "Highlight the text you want to link.",
+      });
+      return;
+    }
+
+    range.deleteContents();
+    const anchor = document.createElement("a");
+    if (linkMode === "external") {
+      const rawUrl = linkUrl.trim();
+      const href = /^(https?:|mailto:)/i.test(rawUrl) ? rawUrl : `https://${rawUrl}`;
+      anchor.href = href;
+      anchor.target = "_blank";
+      anchor.rel = "noopener noreferrer";
+    } else {
+      anchor.href = `#section-${linkTargetId}`;
+      anchor.setAttribute("data-section-link", linkTargetId);
+    }
+    anchor.appendChild(selectedContent);
+    range.insertNode(anchor);
+    range.setStartAfter(anchor);
+    range.collapse(true);
+
+    const selection = window.getSelection();
+    if (selection) {
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+
+    const sectionIdForLink = linkingSectionId;
+    if (sectionIdForLink && linkingBlockId) {
+      const section = findSection(sectionIdForLink);
+      const targetBlock = section?.content.find((block) => block.id === linkingBlockId);
+      if (targetBlock?.type === "paragraph") {
+        const blockElement = document.querySelector<HTMLElement>(`[data-block-id="${linkingBlockId}"]`);
+        if (blockElement) {
+          const sanitized = sanitizeHTML(blockElement.innerHTML);
+          updateBlock(sectionIdForLink, linkingBlockId, sanitized);
+        }
+      }
+    }
+
+    selectionRangeRef.current = null;
+    closeLinkDialog();
   };
 
   const deleteBlock = (sectionId: string, blockId: string) => {
@@ -900,6 +1178,23 @@ const DocumentEditor = () => {
   const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
   const currentSection = findSection(activeSection);
+  const sectionOptions = useMemo(() => {
+    const result: Array<{ id: string; label: string }> = [];
+    const traverse = (list: Section[], ancestors: string[] = []) => {
+      list.forEach((section) => {
+        const trail = [...ancestors, section.title].filter(Boolean);
+        result.push({
+          id: section.id,
+          label: trail.join(" › "),
+        });
+        if (section.children) {
+          traverse(section.children, [...ancestors, section.title]);
+        }
+      });
+    };
+    traverse(sections);
+    return result;
+  }, [sections]);
 
   const toggleSection = (sectionId: string) => {
     const section = findSection(sectionId);
@@ -968,7 +1263,11 @@ const DocumentEditor = () => {
               className={`flex flex-1 items-center gap-2 ${!hasChildren ? "ml-5" : ""}`}
               onClick={() => setActiveSection(section.id)}
             >
-              <FileText className="h-4 w-4" />
+              {(() => {
+                const IconComponent =
+                  depth === 0 ? getSectionIconComponent(section.title) : FileText;
+                return <IconComponent className="h-4 w-4 text-muted-foreground" />;
+              })()}
               <span className={activeSection === section.id ? "font-semibold" : ""}>
                 {section.title}
               </span>
@@ -1027,6 +1326,7 @@ const DocumentEditor = () => {
     };
 
     const allSections = flattenSections(sections);
+    const sectionTitleMap = new Map(allSections.map((section) => [section.id, section.title]));
 
     const attachmentIdSet = new Set<string>();
     allSections.forEach((section) => {
@@ -1182,6 +1482,26 @@ const DocumentEditor = () => {
         const listStyleType = block.bulletStyle || "disc";
         return `<ul class="my-4 list-inside space-y-1 pl-4" style="list-style-type: ${listStyleType};">${listItems}</ul>`;
       }
+      if (block.type === "navigation" && block.navItems && block.navItems.length > 0) {
+        const navItems = block.navItems
+          .filter(item => item.targetSectionId)
+          .map(item => {
+            const fallbackTitle = sectionTitleMap.get(item.targetSectionId!) || "Section";
+            const label = escapeHtml(item.label || fallbackTitle);
+            return `<button onclick="showSection('${item.targetSectionId}'); scrollMainToTop(); return false;" class="flex w-full items-center justify-between rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 transition hover:border-blue-600 hover:text-blue-700">
+              <span>${label}</span>
+              <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+            </button>`;
+          })
+          .join('');
+        if (!navItems) return "";
+        return `<div class="my-6 rounded-xl border border-gray-200 bg-white/90 p-4 shadow-sm">
+          <p class="text-xs font-semibold uppercase tracking-widest text-gray-500 mb-3">Go to</p>
+          <div class="space-y-2">
+            ${navItems}
+          </div>
+        </div>`;
+      }
       // Handle content with potential image/PDF placeholders
       const processedContent = block.content.replace(/\[(?:IMAGE|PDF):[^\]]+\]/g, '');
       // Check if content contains HTML tags (formatted content)
@@ -1295,13 +1615,12 @@ const DocumentEditor = () => {
         const isFirst = depth === 0 && sectionList.indexOf(section) === 0;
         const isExpanded = sectionsToExpand.has(section.id);
         const showIcon = depth === 0; // Only show icon for top-level sections
-        const leftBorderClass = depth > 0 ? 'border-l-2' : '';
-        const leftBorderStyle = depth > 0 ? 'border-color: hsl(258 63% 29% / 0.3);' : '';
+        const indentation = depth * 12 + 12;
         
         return `
           <div>
-            <div class="flex items-start w-full ${leftBorderClass}" style="padding-left: ${depth * 12 + 12}px; ${leftBorderStyle}">
-              <button onclick="showSection('${section.id}'); closeMobileMenu(); return false;" data-section="${section.id}"
+            <div class="sidebar-item flex items-start w-full" data-depth="${depth}" style="padding-left: ${indentation}px;">
+              <button onclick="showSection('${section.id}'); closeMobileMenu(); return false;" data-section="${section.id}" data-depth="${depth}"
                 class="sidebar-btn${isFirst ? ' active' : ''} flex-1 flex items-start gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-gray-100 ${isFirst ? 'bg-gray-100 font-semibold text-blue-800' : 'text-gray-600'}" style="text-align: left;">
                 ${showIcon ? getIconForSection(section.title) : ''}
                 <span class="flex-1 text-left break-words">${escapeHtml(section.title)}</span>
@@ -1416,29 +1735,89 @@ const DocumentEditor = () => {
     }
     
     /* Sidebar Navigation Styles */
+    .sidebar-item {
+      position: relative;
+    }
     .sidebar-btn { 
       position: relative;
       overflow: hidden;
-      transition: all 0.2s ease;
+      transition: color 0.2s ease, background 0.2s ease;
     }
     .sidebar-btn:hover { 
       background: hsl(258 30% 96%) !important;
       color: hsl(258 63% 29%) !important;
     }
+    .sidebar-btn[data-depth]:not([data-depth="0"])::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0.35rem;
+      bottom: 0.35rem;
+      width: 3px;
+      border-radius: 999px;
+      background: hsl(258 63% 29% / 0.25);
+      opacity: 0;
+      transform: scaleY(0.4);
+      transform-origin: center;
+      transition: opacity 0.2s ease, transform 0.2s ease, background-color 0.2s ease;
+      pointer-events: none;
+    }
+    .sidebar-btn[data-depth]:not([data-depth="0"]):hover::before,
+    .sidebar-btn[data-depth]:not([data-depth="0"]):focus-visible::before {
+      opacity: 0.6;
+      transform: scaleY(1);
+      background: hsl(258 63% 55% / 0.6);
+    }
     .sidebar-btn.active { 
       background: hsl(258 30% 96%) !important;
       font-weight: 600 !important;
       color: hsl(258 63% 29%) !important;
-      border-left: 3px solid hsl(258 63% 29%) !important;
-      padding-left: calc(0.75rem - 3px) !important;
+    }
+    .sidebar-btn.active[data-depth]:not([data-depth="0"])::before {
+      opacity: 1;
+      transform: scaleY(1);
+      background: hsl(258 63% 45%);
+      box-shadow: 0 0 0 1px hsl(258 63% 29% / 0.15);
     }
     
-    .section-content { display: none; }
+    .section-content { 
+      display: none;
+      max-width: 60rem;
+      margin: 0 auto;
+    }
     .section-content.active { display: block; }
+    .section-content a {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      color: hsl(258 63% 32%);
+      font-weight: 600;
+      text-decoration: underline;
+      text-decoration-thickness: 2px;
+      text-underline-offset: 3px;
+      background: hsl(258 63% 45% / 0.12);
+      border-radius: 999px;
+      padding: 0 0.45rem;
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+    .section-content a:hover {
+      color: hsl(258 63% 24%);
+      background: hsl(258 63% 45% / 0.22);
+    }
     #mobileMenu { display: none; opacity: 0; transition: opacity 0.3s ease; }
     #mobileMenu.open { display: block; opacity: 1; }
-    #mobileMenuSidebar { transition: transform 0.3s ease; }
+    #mobileMenuSidebar { transition: transform 0.3s ease; width: min(90vw, 320px); }
     #mobileMenuSidebar.open { display: block !important; transform: translateX(0) !important; }
+    #mainContent {
+      max-width: 960px;
+      margin: 0 auto;
+    }
+    #searchWrapper {
+      width: min(320px, 100%);
+    }
+    #mobileSearchFab {
+      display: none;
+    }
     @media (max-width: 768px) {
       #sidebar { display: none !important; }
     }
@@ -1446,12 +1825,147 @@ const DocumentEditor = () => {
       #mobileMenu { display: none !important; }
       #mobileMenuSidebar { display: none !important; }
     }
+    @media (max-width: 640px) {
+      body {
+        font-size: 0.95rem;
+        line-height: 1.6;
+        background: hsl(258 30% 97%);
+      }
+      header .container {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.75rem;
+        height: auto;
+        padding: 0.75rem 1rem;
+      }
+      header .container > div:last-child {
+        width: 100%;
+        justify-content: space-between;
+        gap: 0.5rem;
+      }
+      #searchWrapper {
+        display: none;
+      }
+      #mobileSearchFab {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 48px;
+        height: 48px;
+        border-radius: 14px;
+        border: 1px solid hsl(258 25% 92%);
+        background: #fff;
+        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+        transition: width 0.3s cubic-bezier(0.4, 0.14, 0.3, 1), box-shadow 0.3s ease;
+        overflow: hidden;
+        will-change: width;
+      }
+      #mobileSearchFab.active {
+        width: 100%;
+      }
+      #mobileSearchFab .mobile-search-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        height: 100%;
+        color: hsl(258 63% 29%);
+      }
+      #mobileSearchFab.active .mobile-search-icon {
+        display: none;
+      }
+      #mobileSearchFab .mobile-search-input {
+        display: none;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.3rem 0.6rem 0.35rem;
+        width: 100%;
+      }
+      #mobileSearchFab.active .mobile-search-input {
+        display: flex;
+      }
+      #mobileSearchFab .mobile-search-input input {
+        flex: 1;
+        border: none;
+        outline: none;
+        font-size: 0.9rem;
+        background: transparent;
+      }
+      #mobileSearchClose {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        border: none;
+        background: hsl(258 63% 29% / 0.08);
+        color: hsl(258 63% 29%);
+      }
+      #mobileMenuSidebar {
+        width: min(100vw, 360px);
+      }
+      #mainContent {
+        padding: 1.25rem 0.75rem 2.5rem !important;
+      }
+      .section-content {
+        padding: 1.25rem 1rem 1.5rem;
+        border-radius: 1rem;
+        background: #fff;
+        box-shadow: 0 12px 40px rgba(15, 23, 42, 0.08);
+      }
+      .section-content > h1:first-child {
+        font-size: clamp(1.4rem, 6vw, 1.85rem) !important;
+        line-height: 1.25;
+        margin-bottom: 1rem !important;
+      }
+      .section-content h2 {
+        font-size: clamp(1.1rem, 5vw, 1.35rem) !important;
+        line-height: 1.3;
+      }
+      .section-content h3 {
+        font-size: clamp(1rem, 4.5vw, 1.2rem) !important;
+      }
+      .section-content .prose {
+        font-size: 0.95rem;
+        line-height: 1.55;
+      }
+      .section-content .prose p,
+      .section-content .prose li {
+        margin-bottom: 0.85rem;
+      }
+      .section-content ul,
+      .section-content ol {
+        padding-left: 1.25rem !important;
+      }
+      .section-content .nav-btn {
+        padding: 0.85rem 1rem !important;
+        min-height: auto;
+        flex-direction: row;
+      }
+      .section-content .nav-btn .text-xs {
+        font-size: 0.7rem !important;
+      }
+      .section-content .nav-btn .text-sm,
+      .section-content .nav-btn .text-base,
+      .section-content .nav-btn .font-medium {
+        font-size: 0.9rem !important;
+      }
+      .section-content .nav-btn svg {
+        width: 18px !important;
+        height: 18px !important;
+      }
+      .section-content .border-t {
+        margin-top: 1.5rem !important;
+        padding-top: 1rem !important;
+      }
+    }
   </style>
 </head>
 <body class="bg-white text-gray-800">
   <!-- Header -->
   <header class="sticky top-0 z-50 w-full border-b bg-white/95" style="backdrop-filter: blur(8px);">
-    <div class="container max-w-screen-2xl mx-auto flex h-16 items-center justify-between px-4">
+    <div class="container max-w-screen-2xl mx-auto flex h-16 items-center justify-between px-4 relative">
       <div class="flex items-center gap-3">
         <!-- Mobile Menu Button -->
         <button id="mobileMenuBtn" onclick="toggleMobileMenu(); event.stopPropagation();" class="md:hidden p-2 hover:bg-gray-100 rounded-md">
@@ -1467,7 +1981,7 @@ const DocumentEditor = () => {
           <a href="https://www.leapmile.com" class="transition-colors hover:text-blue-700">Website</a>
           <a href="https://www.leapmile.com/#contact" class="transition-colors hover:text-blue-700">Contact Us</a>
         </nav>
-        <div class="relative">
+        <div class="relative w-full md:w-auto" id="searchWrapper">
           <svg class="absolute left-2.5 top-2.5 h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
           <input type="search" id="searchInput" placeholder="Search..." class="w-[140px] sm:w-[180px] md:w-[200px] lg:w-[300px] pl-8 pr-8 py-2 border rounded-md text-sm" />
           <button onclick="clearSearch()" id="clearBtn" class="hidden absolute right-1 top-1 h-6 w-6 hover:bg-gray-100 rounded-md">
@@ -1480,6 +1994,22 @@ const DocumentEditor = () => {
     <!-- Search Results Dropdown -->
     <div id="searchResults" class="hidden absolute left-2 right-2 md:right-4 md:left-auto md:w-[400px] top-16 z-50 bg-white border rounded-lg shadow-lg max-h-[400px] overflow-y-auto p-2"></div>
   </header>
+
+  <!-- Mobile Search Control -->
+  <div class="md:hidden px-4 pt-2 pb-2">
+    <div id="mobileSearchFab" class="mobile-search-fab" aria-expanded="false">
+      <button id="mobileSearchIcon" class="mobile-search-icon" aria-label="Open search">
+        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+      </button>
+      <div class="mobile-search-input">
+        <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+        <input type="search" id="mobileSearchInput" placeholder="Search..." />
+        <button id="mobileSearchClose" aria-label="Close search">
+          <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+        </button>
+      </div>
+    </div>
+  </div>
   
   <!-- Mobile Menu Overlay -->
   <div id="mobileMenu" class="fixed inset-0 z-40 bg-black bg-opacity-50" style="display: none;"></div>
@@ -1526,6 +2056,29 @@ const DocumentEditor = () => {
     const sections = ${JSON.stringify(allSections.map(s => ({ id: s.id, title: s.title, content: s.content.map(b => ({ type: b.type, content: b.content })) })))};
     const sectionTree = ${JSON.stringify(sectionTreeForJS)};
     const expandedSections = new Set(${JSON.stringify(Array.from(sectionsToExpand))});
+    const desktopSearchInput = document.getElementById('searchInput');
+    const mobileSearchInputEl = document.getElementById('mobileSearchInput');
+    const mobileSearchFab = document.getElementById('mobileSearchFab');
+    const mobileSearchIcon = document.getElementById('mobileSearchIcon');
+    const mobileSearchClose = document.getElementById('mobileSearchClose');
+
+    function openMobileSearch() {
+      if (!mobileSearchFab) return;
+      mobileSearchFab.classList.add('active');
+      mobileSearchFab.setAttribute('aria-expanded', 'true');
+      if (mobileSearchInputEl) {
+        requestAnimationFrame(() => mobileSearchInputEl.focus());
+      }
+    }
+
+    function closeMobileSearch() {
+      if (!mobileSearchFab) return;
+      mobileSearchFab.classList.remove('active');
+      mobileSearchFab.setAttribute('aria-expanded', 'false');
+      if (mobileSearchInputEl) {
+        mobileSearchInputEl.blur();
+      }
+    }
 
     // Initialize expanded sections on page load
     function initializeExpandedSections() {
@@ -1628,8 +2181,6 @@ const DocumentEditor = () => {
       document.querySelectorAll('.sidebar-btn').forEach(el => {
         el.classList.remove('active');
         el.classList.remove('bg-gray-100', 'font-semibold', 'text-blue-800');
-        el.style.borderLeft = '';
-        el.style.paddingLeft = '';
         el.classList.add('text-gray-600');
       });
       
@@ -1639,8 +2190,6 @@ const DocumentEditor = () => {
         btn.classList.add('active');
         btn.classList.add('bg-gray-100', 'font-semibold', 'text-blue-800');
         btn.classList.remove('text-gray-600');
-        btn.style.borderLeft = '3px solid hsl(258 63% 29%)';
-        btn.style.paddingLeft = 'calc(0.75rem - 3px)';
       }
       
       // Also update mobile sidebar button
@@ -1649,8 +2198,6 @@ const DocumentEditor = () => {
         mobileBtn.classList.add('active');
         mobileBtn.classList.add('bg-gray-100', 'font-semibold', 'text-blue-800');
         mobileBtn.classList.remove('text-gray-600');
-        mobileBtn.style.borderLeft = '3px solid hsl(258 63% 29%)';
-        mobileBtn.style.paddingLeft = 'calc(0.75rem - 3px)';
       }
       
       currentSection = sectionId;
@@ -1707,23 +2254,44 @@ const DocumentEditor = () => {
     }
 
     function clearSearch() {
-      document.getElementById('searchInput').value = '';
-      document.getElementById('searchResults').classList.add('hidden');
-      document.getElementById('clearBtn').classList.add('hidden');
+      if (desktopSearchInput) {
+        desktopSearchInput.value = '';
+      }
+      if (mobileSearchInputEl) {
+        mobileSearchInputEl.value = '';
+      }
+      const resultsDiv = document.getElementById('searchResults');
+      if (resultsDiv) {
+        resultsDiv.classList.add('hidden');
+      }
+      const clearBtn = document.getElementById('clearBtn');
+      if (clearBtn) {
+        clearBtn.classList.add('hidden');
+      }
     }
 
-    document.getElementById('searchInput').addEventListener('input', (e) => {
-      const query = e.target.value.toLowerCase().trim();
+    function handleSearchInput(event) {
+      const query = event.target.value.toLowerCase().trim();
       const resultsDiv = document.getElementById('searchResults');
       const clearBtn = document.getElementById('clearBtn');
+      if (!resultsDiv) return;
       
       if (!query) {
         resultsDiv.classList.add('hidden');
-        clearBtn.classList.add('hidden');
+        if (clearBtn && event.target === desktopSearchInput) {
+          clearBtn.classList.add('hidden');
+        }
         return;
       }
       
-      clearBtn.classList.remove('hidden');
+      if (clearBtn) {
+        if (event.target === desktopSearchInput) {
+          clearBtn.classList.remove('hidden');
+        } else {
+          clearBtn.classList.add('hidden');
+        }
+      }
+      
       const results = [];
       
       sections.forEach(section => {
@@ -1743,7 +2311,7 @@ const DocumentEditor = () => {
       
       if (results.length > 0) {
         resultsDiv.innerHTML = results.map(r => 
-          \`<button onclick="showSection('\${r.id}'); clearSearch(); closeMobileMenu();" class="w-full text-left p-3 rounded hover:bg-gray-100">
+          \`<button onclick="showSection('\${r.id}'); clearSearch(); closeMobileMenu(); closeMobileSearch();" class="w-full text-left p-3 rounded hover:bg-gray-100">
             <div class="font-medium text-sm text-blue-700 mb-1">\${r.title}</div>
             <div class="text-xs text-gray-500 line-clamp-2">\${r.match}</div>
           </button>\`
@@ -1752,6 +2320,61 @@ const DocumentEditor = () => {
       } else {
         resultsDiv.innerHTML = '<div class="p-3 text-sm text-gray-500">No results found</div>';
         resultsDiv.classList.remove('hidden');
+      }
+    }
+
+    if (desktopSearchInput) {
+      desktopSearchInput.addEventListener('input', handleSearchInput);
+    }
+    if (mobileSearchInputEl) {
+      mobileSearchInputEl.addEventListener('input', handleSearchInput);
+      mobileSearchInputEl.addEventListener('click', (e) => e.stopPropagation());
+    }
+
+    if (mobileSearchIcon && mobileSearchFab) {
+      mobileSearchIcon.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (mobileSearchFab.classList.contains('active')) {
+          closeMobileSearch();
+        } else {
+          openMobileSearch();
+        }
+      });
+    }
+
+    if (mobileSearchClose) {
+      mobileSearchClose.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        clearSearch();
+        closeMobileSearch();
+      });
+    }
+
+    window.addEventListener('resize', () => {
+      if (window.innerWidth > 640) {
+        closeMobileSearch();
+      }
+    });
+
+    document.addEventListener('click', function(event) {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const anchor = target.closest('a[data-section-link]');
+      if (anchor) {
+        event.preventDefault();
+        const sectionId = anchor.getAttribute('data-section-link');
+        if (sectionId) {
+          showSection(sectionId);
+        }
+      }
+      if (
+        mobileSearchFab &&
+        mobileSearchFab.classList.contains('active') &&
+        window.innerWidth <= 640 &&
+        !mobileSearchFab.contains(target)
+      ) {
+        closeMobileSearch();
       }
     });
 
@@ -1892,7 +2515,7 @@ const DocumentEditor = () => {
         {/* Main Editor Area */}
         <main className="flex-1 overflow-y-auto">
           <div className="container max-w-4xl px-8 py-8">
-            <Card className="p-8">
+            <Card className="p-8 rich-editor-surface" ref={editorCardRef}>
               <div className="space-y-4">
                 {currentSection && (
                   <div>
@@ -1955,6 +2578,7 @@ const DocumentEditor = () => {
                               }}
                               onMouseUp={(e) => handleTextSelection(block.id, e)}
                               className="min-h-[100px] p-2 border-0 text-base outline-none focus:bg-muted/50 rounded"
+                              data-block-id={block.id}
                               dangerouslySetInnerHTML={{ __html: block.content || "Start typing paragraph..." }}
                             />
                           )}
@@ -2325,6 +2949,83 @@ const DocumentEditor = () => {
                               )}
                             </div>
                           )}
+                          {block.type === "navigation" && (
+                            <Card className="my-4 border border-dashed border-primary/30 bg-muted/30 p-4">
+                              <div className="flex items-center justify-between gap-2">
+                                <div>
+                                  <p className="text-sm font-semibold">Go to</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    Build quick links to sections and subsections.
+                                  </p>
+                                </div>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7"
+                                  onClick={() => addNavigationItem(currentSection.id, block.id)}
+                                >
+                                  <Plus className="h-4 w-4" />
+                                </Button>
+                              </div>
+                              {block.navItems && block.navItems.length > 0 ? (
+                                <div className="mt-4 space-y-3">
+                                  {block.navItems.map((item) => (
+                                    <Card key={item.id} className="border bg-background p-3 shadow-none">
+                                      <div className="flex items-center gap-2">
+                                        <Input
+                                          value={item.label}
+                                          onChange={(e) =>
+                                            updateNavigationItem(currentSection.id, block.id, item.id, {
+                                              label: e.target.value,
+                                            })
+                                          }
+                                          placeholder="Navigation label"
+                                        />
+                                        <Button
+                                          variant="ghost"
+                                          size="icon"
+                                          className="h-7 w-7"
+                                          onClick={() => removeNavigationItem(currentSection.id, block.id, item.id)}
+                                        >
+                                          <X className="h-3 w-3" />
+                                        </Button>
+                                      </div>
+                                      <div className="mt-2">
+                                        <Select
+                                          value={item.targetSectionId ?? ""}
+                                          onValueChange={(value) =>
+                                            updateNavigationItem(currentSection.id, block.id, item.id, {
+                                              targetSectionId: value,
+                                            })
+                                          }
+                                        >
+                                          <SelectTrigger>
+                                            <SelectValue placeholder="Select destination" />
+                                          </SelectTrigger>
+                                          <SelectContent>
+                                            {sectionOptions.map((option) => (
+                                              <SelectItem key={option.id} value={option.id}>
+                                                {option.label}
+                                              </SelectItem>
+                                            ))}
+                                          </SelectContent>
+                                        </Select>
+                                      </div>
+                                    </Card>
+                                  ))}
+                                </div>
+                              ) : (
+                                <Button
+                                  variant="outline"
+                                  className="mt-4 flex w-full flex-col items-center justify-center gap-2 border-dashed border-muted-foreground/40 py-6"
+                                  onClick={() => addNavigationItem(currentSection.id, block.id)}
+                                >
+                                  <Plus className="h-4 w-4" />
+                                  Add navigation item
+                                </Button>
+                              )}
+                            </Card>
+                          )}
                           
                           {/* Delete button */}
                           <Button
@@ -2429,6 +3130,14 @@ const DocumentEditor = () => {
                                     <List className="h-4 w-4" />
                                     Bullet List
                                   </Button>
+                                  <Button
+                                    variant="ghost"
+                                    className="justify-start gap-2 text-sm"
+                                    onClick={() => addBlock(currentSection.id, "navigation", block.id)}
+                                  >
+                                    <Compass className="h-4 w-4" />
+                                    Navigate to
+                                  </Button>
                                 </div>
                               </PopoverContent>
                             </Popover>
@@ -2518,6 +3227,14 @@ const DocumentEditor = () => {
                               <List className="h-4 w-4" />
                               Bullet List
                             </Button>
+                            <Button
+                              variant="ghost"
+                              className="justify-start gap-2"
+                              onClick={() => addBlock(currentSection.id, "navigation")}
+                            >
+                              <Compass className="h-4 w-4" />
+                              Navigate to
+                            </Button>
                           </div>
                         </Card>
                       ) : (
@@ -2537,7 +3254,6 @@ const DocumentEditor = () => {
             </Card>
           </div>
         </main>
-
       </div>
 
       {/* Image Size Selection Dialog */}
@@ -2644,12 +3360,63 @@ const DocumentEditor = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={linkDialogOpen} onOpenChange={(open) => (!open ? closeLinkDialog() : null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add a link</DialogTitle>
+            <DialogDescription>
+              {linkingText
+                ? `Convert "${linkingText}" into a link.`
+                : "Select text in the editor to create a link."}
+            </DialogDescription>
+          </DialogHeader>
+          <Tabs
+            value={linkMode}
+            onValueChange={(value) => setLinkMode(value as "external" | "internal")}
+            className="mt-2"
+          >
+            <TabsList className="grid grid-cols-2">
+              <TabsTrigger value="external">External link</TabsTrigger>
+              <TabsTrigger value="internal">Document section</TabsTrigger>
+            </TabsList>
+            <TabsContent value="external" className="mt-4 space-y-3">
+              <Input
+                value={linkUrl}
+                onChange={(e) => setLinkUrl(e.target.value)}
+                placeholder="https://example.com/page"
+              />
+            </TabsContent>
+            <TabsContent value="internal" className="mt-4 space-y-3">
+              <Select value={linkTargetId} onValueChange={(value) => setLinkTargetId(value)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a section or subsection" />
+                </SelectTrigger>
+                <SelectContent>
+                  {sectionOptions.map((option) => (
+                    <SelectItem key={option.id} value={option.id}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </TabsContent>
+          </Tabs>
+          <DialogFooter className="mt-4">
+            <Button variant="outline" onClick={closeLinkDialog}>
+              Cancel
+            </Button>
+            <Button onClick={applyLinkToSelection}>Insert link</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       
       {/* Text Formatting Toolbar */}
       {textSelection && (
         <TextFormattingToolbar
           position={textSelection.position}
           onFormat={applyTextFormatting}
+          onLink={openLinkPicker}
         />
       )}
     </div>
